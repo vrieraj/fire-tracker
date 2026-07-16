@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 
 _root = Path(__file__).resolve().parents[2]
 if str(_root / 'src') not in sys.path:
@@ -16,6 +16,8 @@ if str(_root / 'src') not in sys.path:
 
 from fire_tracker.database import FireDatabase
 from fire_tracker.orchestrator import FireOrchestrator
+from fire_tracker.weather import geocode, fetch_forecast
+from fire_tracker.meteogram import generate_meteogram, meteogram_to_png
 
 app = Flask(__name__)
 
@@ -98,6 +100,140 @@ def fires_stats():
         'total': _db.count(),
         'sources': SOURCE_LABELS,
     })
+
+
+# ── Weather & Meteogram ───────────────────────────────────────────────────
+
+
+@app.route('/api/geocode')
+def api_geocode():
+    """
+    Search for locations by name.
+
+    Query params:
+        q: search query (required)
+        limit: max results (default 5)
+    """
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'error': 'Missing query parameter "q"'}), 400
+
+    limit = request.args.get('limit', 5, type=int)
+    locations = geocode(query, limit=limit)
+
+    return jsonify({
+        'results': [
+            {
+                'name': loc.name,
+                'latitude': loc.latitude,
+                'longitude': loc.longitude,
+                'elevation': loc.elevation,
+                'country': loc.country,
+                'country_code': loc.country_code,
+                'admin1': loc.admin1,
+                'admin2': loc.admin2,
+                'timezone': loc.timezone,
+                'population': loc.population,
+                'display_name': loc.display_name,
+            }
+            for loc in locations
+        ]
+    })
+
+
+@app.route('/api/weather')
+def api_weather():
+    """
+    Get weather forecast for a location.
+
+    Query params:
+        lat, lon: coordinates (required)
+        forecast_days: days of forecast (default 3, max 16)
+        past_days: past days to include (default 1)
+    """
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    if lat is None or lon is None:
+        return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
+
+    from fire_tracker.weather import Location
+    location = Location(
+        name=request.args.get('name', ''),
+        latitude=lat,
+        longitude=lon,
+    )
+
+    forecast_days = request.args.get('forecast_days', 3, type=int)
+    past_days = request.args.get('past_days', 1, type=int)
+
+    weather = fetch_forecast(
+        location,
+        forecast_days=forecast_days,
+        past_days=past_days,
+    )
+    if weather is None:
+        return jsonify({'error': 'Failed to fetch weather data'}), 502
+
+    return jsonify({
+        'location': {
+            'name': weather.location.name,
+            'latitude': weather.location.latitude,
+            'longitude': weather.location.longitude,
+            'elevation': weather.location.elevation,
+        },
+        'model': weather.model,
+        'hourly': weather.hourly,
+        'daily': weather.daily,
+        'hourly_units': weather.hourly_units,
+        'daily_units': weather.daily_units,
+    })
+
+
+@app.route('/api/meteogram.png')
+def api_meteogram_png():
+    """
+    Generate meteogram image for a location.
+
+    Query params:
+        lat, lon: coordinates (required)
+        name: location name (optional, for title)
+        forecast_days: days of forecast (default 3)
+        past_days: past days (default 1)
+        width: figure width in inches (default 12)
+        height: figure height in inches (default 10)
+    """
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    if lat is None or lon is None:
+        return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
+
+    from fire_tracker.weather import Location
+    location = Location(
+        name=request.args.get('name', ''),
+        latitude=lat,
+        longitude=lon,
+    )
+
+    forecast_days = request.args.get('forecast_days', 3, type=int)
+    past_days = request.args.get('past_days', 1, type=int)
+    width = request.args.get('width', 12, type=float)
+    height = request.args.get('height', 10, type=float)
+
+    weather = fetch_forecast(
+        location,
+        forecast_days=forecast_days,
+        past_days=past_days,
+    )
+    if weather is None:
+        return jsonify({'error': 'Failed to fetch weather data'}), 502
+
+    try:
+        png_data = meteogram_to_png(weather, figsize=(width, height))
+    except Exception as e:
+        logger.error('Meteogram generation error: %s', e)
+        return jsonify({'error': f'Meteogram generation failed: {e}'}), 500
+
+    return Response(png_data, mimetype='image/png')
 
 
 if __name__ == '__main__':
