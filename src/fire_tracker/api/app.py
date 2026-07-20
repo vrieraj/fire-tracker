@@ -5,19 +5,25 @@ Flask application for Fire Tracker.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_from_directory
+from dotenv import load_dotenv
 
-_root = Path(__file__).resolve().parents[2]
+_root = Path(__file__).resolve().parents[3]
+load_dotenv(_root / '.env')
 if str(_root / 'src') not in sys.path:
     sys.path.insert(0, str(_root / 'src'))
 
 from fire_tracker.database import FireDatabase
 from fire_tracker.orchestrator import FireOrchestrator
-from fire_tracker.weather import geocode, fetch_forecast
+from fire_tracker.weather import geocode, fetch_forecast, Location
 from fire_tracker.meteogram import generate_meteogram, meteogram_to_png
+from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
+from fire_tracker.frp import fetch_frp
+from fire_tracker.metar import fetch_metar_stations
 
 app = Flask(__name__)
 
@@ -26,8 +32,9 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
+logger = logging.getLogger(__name__)
 
-_DB_PATH = _root / 'data' / 'fires.db'
+_DB_PATH = Path(os.environ.get('DB_PATH', str(_root / 'data' / 'fires.db')))
 _db = FireDatabase(_DB_PATH)
 
 SOURCE_MAIN_URLS = {
@@ -49,14 +56,28 @@ SOURCE_LABELS = {
 }
 
 
+@app.route('/')
+def index():
+    return send_from_directory('static', 'index.html')
+
+
 @app.route('/api/fires/tracked')
 def fires_tracked():
+    import json as _json
     country = request.args.get('country')
     fires = _db.get_active_fires(country=country)
     features = []
     for f in fires:
         if f.get('latitude') is None or f.get('longitude') is None:
             continue
+
+        raw_data = f.get('raw_data', {})
+        if isinstance(raw_data, str):
+            try:
+                raw_data = _json.loads(raw_data)
+            except (_json.JSONDecodeError, TypeError):
+                raw_data = {}
+
         features.append({
             'type': 'Feature',
             'geometry': {
@@ -69,6 +90,7 @@ def fires_tracked():
                 'source_label': SOURCE_LABELS.get(f['source'], f['source']),
                 'external_id': f['external_id'],
                 'source_url': f.get('source_url') or SOURCE_MAIN_URLS.get(f['source']),
+                'chronology_url': raw_data.get('chronology_url', ''),
                 'municipality': f.get('municipality'),
                 'province': f.get('province'),
                 'region': f.get('region'),
@@ -100,6 +122,48 @@ def fires_stats():
         'total': _db.count(),
         'sources': SOURCE_LABELS,
     })
+
+
+@app.route('/api/fires/<fire_id>/chronology')
+def fire_chronology(fire_id):
+    """
+    Redirect to X.com search for the fire's hashtag chronology.
+
+    The fire_id format is "source:external_id" (e.g., "xmonitor:x_123456").
+    """
+    from flask import redirect
+    import json
+
+    parts = fire_id.split(':', 1)
+    if len(parts) != 2:
+        return jsonify({'error': 'Invalid fire_id format. Expected "source:external_id"'}), 400
+
+    source, external_id = parts
+
+    # Find the fire in the database
+    fire = _db.get_fire(source, external_id)
+    if not fire:
+        return jsonify({'error': 'Fire not found'}), 404
+
+    raw_data = fire.get('raw_data', {})
+    if isinstance(raw_data, str):
+        try:
+            raw_data = json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError):
+            raw_data = {}
+
+    chronology_url = raw_data.get('chronology_url', '')
+    if not chronology_url:
+        # Generate from municipality if available
+        municipality = fire.get('municipality', '')
+        if municipality:
+            import urllib.parse
+            hashtag = f"#IF{municipality.replace(' ', '')}"
+            chronology_url = f"https://x.com/search?q={urllib.parse.quote(hashtag)}&src=typed_query&f=live"
+        else:
+            return jsonify({'error': 'No chronology URL available for this fire'}), 404
+
+    return redirect(chronology_url)
 
 
 # ── Weather & Meteogram ───────────────────────────────────────────────────
@@ -141,63 +205,15 @@ def api_geocode():
     })
 
 
-@app.route('/api/weather')
-def api_weather():
-    """
-    Get weather forecast for a location.
-
-    Query params:
-        lat, lon: coordinates (required)
-        forecast_days: days of forecast (default 3, max 16)
-        past_days: past days to include (default 1)
-    """
-    lat = request.args.get('lat', type=float)
-    lon = request.args.get('lon', type=float)
-    if lat is None or lon is None:
-        return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
-
-    from fire_tracker.weather import Location
-    location = Location(
-        name=request.args.get('name', ''),
-        latitude=lat,
-        longitude=lon,
-    )
-
-    forecast_days = request.args.get('forecast_days', 3, type=int)
-    past_days = request.args.get('past_days', 1, type=int)
-
-    weather = fetch_forecast(
-        location,
-        forecast_days=forecast_days,
-        past_days=past_days,
-    )
-    if weather is None:
-        return jsonify({'error': 'Failed to fetch weather data'}), 502
-
-    return jsonify({
-        'location': {
-            'name': weather.location.name,
-            'latitude': weather.location.latitude,
-            'longitude': weather.location.longitude,
-            'elevation': weather.location.elevation,
-        },
-        'model': weather.model,
-        'hourly': weather.hourly,
-        'daily': weather.daily,
-        'hourly_units': weather.hourly_units,
-        'daily_units': weather.daily_units,
-    })
-
-
 @app.route('/api/meteogram.png')
 def api_meteogram_png():
     """
-    Generate meteogram image for a location.
+    Generate full 5-panel meteogram image for a location.
 
     Query params:
         lat, lon: coordinates (required)
         name: location name (optional, for title)
-        forecast_days: days of forecast (default 3)
+        forecast_days: days of forecast (default 10)
         past_days: past days (default 1)
         width: figure width in inches (default 12)
         height: figure height in inches (default 10)
@@ -207,14 +223,14 @@ def api_meteogram_png():
     if lat is None or lon is None:
         return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
 
-    from fire_tracker.weather import Location
     location = Location(
         name=request.args.get('name', ''),
         latitude=lat,
         longitude=lon,
+        elevation=0,
     )
 
-    forecast_days = request.args.get('forecast_days', 3, type=int)
+    forecast_days = request.args.get('forecast_days', 1, type=int)
     past_days = request.args.get('past_days', 1, type=int)
     width = request.args.get('width', 12, type=float)
     height = request.args.get('height', 10, type=float)
@@ -234,6 +250,168 @@ def api_meteogram_png():
         return jsonify({'error': f'Meteogram generation failed: {e}'}), 500
 
     return Response(png_data, mimetype='image/png')
+
+
+@app.route('/api/stations')
+def api_stations():
+    """
+    Search for WU PWS weather stations near a point.
+
+    Query params:
+        lat, lon: coordinates (required)
+        radius_km: search radius in km (default 50, max 100)
+        api_key: WU API key (optional, falls back to WU_API_KEY env var)
+    """
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    if lat is None or lon is None:
+        return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
+
+    radius_km = request.args.get('radius_km', 50, type=float)
+    radius_km = min(radius_km, 100)
+
+    api_key = request.args.get('api_key') or get_wu_api_key()
+    if not api_key:
+        return jsonify({'error': 'WU API key required (param or WU_API_KEY env)'}), 400
+
+    try:
+        stations = fetch_wu_stations_near(lat, lon, radius_km, api_key)
+    except Exception as e:
+        logger.error('Station search error: %s', e)
+        return jsonify({'error': f'Station search failed: {e}'}), 500
+
+    return jsonify({
+        'count': len(stations),
+        'radius_km': radius_km,
+        'center': {'lat': lat, 'lon': lon},
+        'stations': stations,
+    })
+
+
+# ── METAR (aviation weather stations) ────────────────────────────────────────
+
+
+@app.route('/api/metar')
+def api_metar():
+    """
+    Get all METAR stations in ES/PT/FR with current observations.
+
+    Returns GeoJSON-compatible station list from aviationweather.gov.
+    No authentication required. Data updates hourly.
+    """
+    try:
+        stations = fetch_metar_stations()
+    except Exception as e:
+        logger.error('METAR fetch error: %s', e)
+        return jsonify({'error': f'METAR fetch failed: {e}'}), 500
+
+    return jsonify({
+        'count': len(stations),
+        'source': 'aviationweather.gov (NOAA)',
+        'stations': stations,
+    })
+
+
+# ── FRP (Fire Radiative Power) ──────────────────────────────────────────────
+
+
+@app.route('/api/frp')
+def api_frp():
+    """
+    Get FRP fire detections for Iberia + France (last 24h).
+
+    Serves from DB (fast), fetches from LSA SAF if DB is empty.
+    Returns GeoJSON FeatureCollection.
+    """
+    from fire_tracker.frp import _get_age_color, _BBOX, _WINDOW_HOURS
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+
+    # Try DB first
+    db_detections = _db.get_frp_detections(hours=_WINDOW_HOURS)
+
+    if not db_detections:
+        # DB empty — fetch from LSA SAF
+        import threading
+        result = [None]
+
+        def _fetch():
+            try:
+                result[0] = fetch_frp()
+            except Exception as e:
+                result[0] = {'error': str(e)}
+
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+        t.join(timeout=30)
+
+        if t.is_alive():
+            return jsonify({'type': 'FeatureCollection', 'features': [], 'metadata': {'error': 'timeout'}}), 200
+
+        data = result[0]
+        if isinstance(data, dict) and data.get('error'):
+            return jsonify({'type': 'FeatureCollection', 'features': [], 'metadata': {'error': data['error']}}), 200
+
+        # Persist to DB
+        db_rows = []
+        for f in data.get('features', []):
+            p = f['properties']
+            db_rows.append({
+                'longitude': f['geometry']['coordinates'][0],
+                'latitude': f['geometry']['coordinates'][1],
+                'frp_mw': p['frp_mw'],
+                'confidence': p['confidence'],
+                'frp_uncertainty': p['frp_uncertainty'],
+                'pixel_size_km2': p['pixel_size_km2'],
+                'acquisition_time': p['acquisition_time'],
+                'bt_mir': p['bt_mir'],
+                'bt_tir': p['bt_tir'],
+            })
+        if db_rows:
+            _db.insert_frp_detections(db_rows)
+            db_detections = _db.get_frp_detections(hours=_WINDOW_HOURS)
+
+    # Build GeoJSON from DB rows
+    features = []
+    for d in db_detections:
+        try:
+            acq = datetime.fromisoformat(d['acquisition_time'])
+        except (ValueError, TypeError):
+            acq = now
+        age_hours = (now - acq).total_seconds() / 3600.0
+        color, size = _get_age_color(age_hours, d['frp_mw'])
+
+        features.append({
+            'type': 'Feature',
+            'geometry': {
+                'type': 'Point',
+                'coordinates': [d['longitude'], d['latitude']],
+            },
+            'properties': {
+                'frp_mw': round(d['frp_mw'], 1),
+                'confidence': round(d['confidence'], 1) if d.get('confidence') else 0,
+                'frp_uncertainty': round(d['frp_uncertainty'], 1) if d.get('frp_uncertainty') else 0,
+                'pixel_size_km2': round(d['pixel_size_km2'], 2) if d.get('pixel_size_km2') else 0,
+                'acquisition_time': d['acquisition_time'],
+                'bt_tir': round(d['bt_tir'], 1) if d.get('bt_tir') else 0,
+                'color': color,
+                'radius': size,
+                'age_hours': round(age_hours, 1),
+            },
+        })
+
+    return jsonify({
+        'type': 'FeatureCollection',
+        'features': features,
+        'metadata': {
+            'source': 'LSA SAF FRP-PIXEL (MTG)',
+            'source_url': 'https://datalsasaf.lsasvcs.ipma.pt/PRODUCTS/MTG/MTFRPPixel/',
+            'detection_count': len(features),
+            'window_hours': _WINDOW_HOURS,
+            'bbox': _BBOX,
+        },
+    })
 
 
 if __name__ == '__main__':

@@ -67,6 +67,26 @@ class FireDatabase:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_fires_status ON fires(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_fires_country ON fires(country)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_fires_coords ON fires(latitude, longitude)')
+
+            # FRP satellite detections table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS frp_detections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    longitude REAL NOT NULL,
+                    latitude REAL NOT NULL,
+                    frp_mw REAL NOT NULL,
+                    confidence REAL,
+                    frp_uncertainty REAL,
+                    pixel_size_km2 REAL,
+                    acquisition_time TEXT NOT NULL,
+                    bt_mir REAL,
+                    bt_tir REAL,
+                    inserted_at TEXT NOT NULL,
+                    UNIQUE(longitude, latitude, acquisition_time)
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_frp_acq ON frp_detections(acquisition_time)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_frp_coords ON frp_detections(latitude, longitude)')
             conn.commit()
 
     def upsert(self, fire: dict) -> bool:
@@ -181,3 +201,72 @@ class FireDatabase:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return d
+
+    # ── FRP methods ──────────────────────────────────────────────
+
+    def insert_frp_detections(self, detections: list[dict]) -> int:
+        """Insert FRP detections, skip duplicates. Returns count inserted."""
+        now = datetime.now(timezone.utc).isoformat()
+        inserted = 0
+        with self._connect() as conn:
+            for d in detections:
+                try:
+                    cur = conn.execute(
+                        'INSERT OR IGNORE INTO frp_detections '
+                        '(longitude, latitude, frp_mw, confidence, frp_uncertainty, '
+                        'pixel_size_km2, acquisition_time, bt_mir, bt_tir, inserted_at) '
+                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        (
+                            d['longitude'], d['latitude'], d['frp_mw'],
+                            d.get('confidence'), d.get('frp_uncertainty'),
+                            d.get('pixel_size_km2'), d['acquisition_time'],
+                            d.get('bt_mir'), d.get('bt_tir'), now,
+                        ),
+                    )
+                    if cur.rowcount > 0:
+                        inserted += 1
+                except Exception as e:
+                    logger.debug('FRP insert error: %s', e)
+            conn.commit()
+        return inserted
+
+    def get_frp_detections(self, hours: int = 24) -> list[dict]:
+        """Get FRP detections from the last N hours."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM frp_detections "
+                "WHERE acquisition_time >= datetime('now', ?) "
+                "ORDER BY acquisition_time ASC",
+                (f'-{hours} hours',),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_frp_detections(self, hours: int = 24) -> int:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM frp_detections "
+                "WHERE acquisition_time >= datetime('now', ?)",
+                (f'-{hours} hours',),
+            ).fetchone()[0]
+
+    def get_frp_by_bbox(
+        self,
+        lat_min: float,
+        lat_max: float,
+        lon_min: float,
+        lon_max: float,
+        hours: int = 24,
+        min_confidence: float = 0.3,
+    ) -> list[dict]:
+        """Get FRP detections within a bounding box."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM frp_detections "
+                "WHERE acquisition_time >= datetime('now', ?) "
+                "AND latitude BETWEEN ? AND ? "
+                "AND longitude BETWEEN ? AND ? "
+                "AND confidence >= ? "
+                "ORDER BY acquisition_time ASC",
+                (f'-{hours} hours', lat_min, lat_max, lon_min, lon_max, min_confidence),
+            ).fetchall()
+        return [dict(r) for r in rows]

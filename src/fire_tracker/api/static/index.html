@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fire Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header>
+        <h1>Fire Tracker</h1>
+        <button id="btn-close-sidebar" aria-label="Cerrar">&times;</button>
+      </header>
+      <div id="search-box">
+        <input type="text" id="search-input" placeholder="Buscar ubicacion..." autocomplete="off" />
+        <ul id="search-results"></ul>
+      </div>
+      <div id="fire-count"></div>
+      <ul id="fire-list"></ul>
+      <button id="btn-refresh">Actualizar datos</button>
+    </aside>
+    <main>
+      <button id="btn-open-sidebar" aria-label="Menu">&#9776;</button>
+      <div id="map"></div>
+    </main>
+  </div>
+  <div id="meteogram-modal" class="modal hidden">
+    <div class="modal-content">
+      <button id="btn-close-modal" class="modal-close" aria-label="Cerrar">&times;</button>
+      <img id="meteogram-img" src="" alt="Meteograma" />
+    </div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

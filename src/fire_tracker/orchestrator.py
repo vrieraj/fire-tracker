@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from fire_tracker.scrapers import (
 
 logger = logging.getLogger(__name__)
 
-_DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'fires.db'
+_DB_PATH = Path(os.environ.get('DB_PATH', str(Path(__file__).resolve().parents[2] / 'data' / 'fires.db')))
 _DEDUP_RADIUS_M = 500
 _DEDUP_TIME_HOURS = 3
 
