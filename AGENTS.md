@@ -29,6 +29,7 @@ pip install -e .
 | `src/fire_tracker/frp_locator.py` | FRP-based fire locator (geocode → FRP bbox search → centroid) |
 | `src/fire_tracker/monitor.py` | Fire monitor orchestrator (X search → FRP cross-reference → DB) |
 | `src/fire_tracker/api/app.py` | Flask REST API |
+| `src/fire_tracker/gradio_app.py` | Gradio + FastAPI deployment (HF Spaces) |
 | `scripts/fidias_crossref.py` | Standalone FIDIAS CLM cross-reference script |
 
 ## Data Sources — Fire Tracking
@@ -264,6 +265,8 @@ Uses Weather Underground Personal Weather Stations API:
 - `requests` — HTTP client
 - `pyproj` — UTM→WGS84 conversion (INCyL only)
 - `flask` — REST API
+- `gradio` — Gradio UI (HF Spaces deployment)
+- `uvicorn` — ASGI server (Gradio app)
 - `matplotlib` — Meteogram generation
 - `numpy` — Numerical operations
 - `pandas` — Data processing
@@ -330,6 +333,50 @@ HF Space (Docker)
 - `.gitignore` excludes `data/*.db` — DB never enters git
 - HF free tier: 512MB RAM, 16GB storage, sleep on idle (~30s cold start)
 - Cron runs inside Docker container (not HF native)
+
+## HF Spaces Deployment (Gradio)
+
+Alternative deployment using Gradio SDK (free on HF, no Docker required).
+
+### Architecture
+
+```
+HF Space (Gradio)
+├── gradio_app.py          ← FastAPI + Gradio Blocks (Leaflet map, sidebar, popups)
+├── /data/                  ← HF persistent storage
+│   └── fires.db            ← SQLite (auto-created)
+└── pyproject.toml          ← gradio>=4.0 in dependencies
+```
+
+### Milestones
+
+| # | Milestone | Files | Status |
+|---|-----------|-------|--------|
+| 1 | DB_PATH env var | `orchestrator.py`, `api/app.py` | ✅ |
+| 2 | gunicorn + gradio deps | `pyproject.toml` | ✅ |
+| 3 | Gradio app | `gradio_app.py` | ✅ |
+| 4 | HF Space deploy | HF config | ⏳ |
+
+### API endpoints (mounted on FastAPI)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/fires/tracked` | GET | GeoJSON of active fires |
+| `/api/fires/refresh` | POST | Re-run all scrapers |
+| `/api/geocode?q=...` | GET | Search locations |
+| `/api/meteogram?lat=...&lon=...` | GET | Full 5-panel meteogram (PNG) |
+| `/api/stations?lat=...&lon=...` | GET | WU PWS stations within radius (JSON) |
+| `/api/metar` | GET | METAR stations in ES/PT/FR with current obs (JSON) |
+| `/api/frp` | GET | LSA SAF FRP-PIXEL GeoJSON (latest detections) |
+| `/api/refresh` | POST | Re-run all scrapers + return stats |
+
+### Notes
+
+- Reuses all existing modules (scrapers, database, weather, meteogram)
+- FastAPI serves custom API routes; Gradio mounts at `/` via `gr.mount_gradio_app`
+- Gradio 6.x: `theme`, `css`, `js` passed to `mount_gradio_app()`, not `Blocks()` constructor
+- JS calls `/api/...` directly (not `/gradio_api/api/...`)
+- Branch: `feat/gradio-ui`
 
 ## Pending
 
