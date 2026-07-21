@@ -14,7 +14,6 @@
   const fireCount = $('#fire-count');
   const searchInput = $('#search-input');
   const searchResults = $('#search-results');
-  const btnRefresh = $('#btn-refresh');
   const btnOpen = $('#btn-open-sidebar');
   const btnClose = $('#btn-close-sidebar');
   // ── Map layers ─────────────────────────────────────
@@ -662,19 +661,6 @@
   btnClose.addEventListener('click', () => sidebar.classList.remove('open'));
 
   // ── Refresh ────────────────────────────────────────
-  btnRefresh.addEventListener('click', async () => {
-    btnRefresh.disabled = true;
-    btnRefresh.textContent = 'Actualizando...';
-    try {
-      await fetch('/api/fires/refresh', { method: 'POST' });
-      await loadFires();
-    } catch (e) {
-      console.error('Refresh error:', e);
-    }
-    btnRefresh.disabled = false;
-    btnRefresh.textContent = 'Actualizar datos';
-  });
-
   // ── FRP ────────────────────────────────────────────
   async function loadFRP() {
     try {
