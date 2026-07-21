@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-from flask import Flask, jsonify, request, Response, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory
 from dotenv import load_dotenv
 
 _root = Path(__file__).resolve().parents[3]
@@ -19,8 +19,7 @@ if str(_root / 'src') not in sys.path:
 
 from fire_tracker.database import FireDatabase
 from fire_tracker.orchestrator import FireOrchestrator
-from fire_tracker.weather import geocode, fetch_forecast, Location
-from fire_tracker.meteogram import generate_meteogram, meteogram_to_png
+from fire_tracker.weather import geocode, Location
 from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
 from fire_tracker.frp import fetch_frp
 from fire_tracker.metar import fetch_metar_stations
@@ -166,7 +165,7 @@ def fire_chronology(fire_id):
     return redirect(chronology_url)
 
 
-# ── Weather & Meteogram ───────────────────────────────────────────────────
+# ── Weather ────────────────────────────────────────────────────────────────
 
 
 @app.route('/api/geocode')
@@ -176,14 +175,15 @@ def api_geocode():
 
     Query params:
         q: search query (required)
-        limit: max results (default 5)
     """
     query = request.args.get('q', '').strip()
     if not query:
         return jsonify({'error': 'Missing query parameter "q"'}), 400
 
-    limit = request.args.get('limit', 5, type=int)
-    locations = geocode(query, limit=limit)
+    loc = geocode(query)
+
+    if loc is None:
+        return jsonify({'results': []})
 
     return jsonify({
         'results': [
@@ -193,63 +193,10 @@ def api_geocode():
                 'longitude': loc.longitude,
                 'elevation': loc.elevation,
                 'country': loc.country,
-                'country_code': loc.country_code,
-                'admin1': loc.admin1,
-                'admin2': loc.admin2,
-                'timezone': loc.timezone,
-                'population': loc.population,
-                'display_name': loc.display_name,
+                'region': loc.region,
             }
-            for loc in locations
         ]
     })
-
-
-@app.route('/api/meteogram.png')
-def api_meteogram_png():
-    """
-    Generate full 5-panel meteogram image for a location.
-
-    Query params:
-        lat, lon: coordinates (required)
-        name: location name (optional, for title)
-        forecast_days: days of forecast (default 10)
-        past_days: past days (default 1)
-        width: figure width in inches (default 12)
-        height: figure height in inches (default 10)
-    """
-    lat = request.args.get('lat', type=float)
-    lon = request.args.get('lon', type=float)
-    if lat is None or lon is None:
-        return jsonify({'error': 'Missing "lat" and/or "lon" parameters'}), 400
-
-    location = Location(
-        name=request.args.get('name', ''),
-        latitude=lat,
-        longitude=lon,
-        elevation=0,
-    )
-
-    forecast_days = request.args.get('forecast_days', 1, type=int)
-    past_days = request.args.get('past_days', 1, type=int)
-    width = request.args.get('width', 12, type=float)
-    height = request.args.get('height', 10, type=float)
-
-    weather = fetch_forecast(
-        location,
-        forecast_days=forecast_days,
-        past_days=past_days,
-    )
-    if weather is None:
-        return jsonify({'error': 'Failed to fetch weather data'}), 502
-
-    try:
-        png_data = meteogram_to_png(weather, figsize=(width, height))
-    except Exception as e:
-        logger.error('Meteogram generation error: %s', e)
-        return jsonify({'error': f'Meteogram generation failed: {e}'}), 500
-
-    return Response(png_data, mimetype='image/png')
 
 
 @app.route('/api/stations')
@@ -412,6 +359,49 @@ def api_frp():
             'bbox': _BBOX,
         },
     })
+
+
+# ── Cron endpoints (for cron-job.org) ─────────────────────────────────────
+
+
+@app.route('/ping')
+def ping():
+    return jsonify({"status": "ok"})
+
+
+@app.route('/api/cron/run', methods=['POST'])
+def cron_run():
+    stats = {}
+    try:
+        orch = FireOrchestrator(_DB_PATH)
+        stats["scrapers"] = orch.run()
+    except Exception as e:
+        stats["scrapers_error"] = str(e)
+    try:
+        from fire_tracker.monitor import run_monitor
+        stats["monitor"] = run_monitor()
+    except Exception as e:
+        stats["monitor_error"] = str(e)
+    return jsonify(stats)
+
+
+@app.route('/api/cron/scrapers', methods=['POST'])
+def cron_scrapers():
+    orch = FireOrchestrator(_DB_PATH)
+    stats = orch.run()
+    return jsonify(stats)
+
+
+@app.route('/api/cron/monitor', methods=['POST'])
+def cron_monitor():
+    from fire_tracker.monitor import run_monitor
+    stats = run_monitor()
+    return jsonify(stats)
+
+
+@app.route('/api/cron/stations', methods=['POST'])
+def cron_stations():
+    return jsonify({"status": "ok", "message": "station cache cleanup (no-op)"})
 
 
 if __name__ == '__main__':

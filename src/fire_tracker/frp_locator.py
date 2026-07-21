@@ -115,18 +115,17 @@ def locate_fire(
             return None
 
         query = f"{municipality}, {province}" if province else municipality
-        locations = geocode(query, limit=1)
-        if not locations:
+        loc = geocode(query)
+        if loc is None:
             logger.warning("Geocoding failed for '%s'", query)
             return None
 
-        loc = locations[0]
         lat = loc.latitude
         lon = loc.longitude
         municipality = loc.name or municipality
-        province = loc.admin1 or province
-        region = getattr(loc, 'admin2', '') or ""
-        country = loc.country_code or "ES"
+        province = loc.region or province
+        region = loc.region or ""
+        country = loc.country or "ES"
     else:
         # Reverse geocode to get location name
         from fire_tracker.api.app import reverse_geocode

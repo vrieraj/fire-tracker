@@ -205,44 +205,6 @@ main { flex: 1; position: relative; }
   cursor: pointer;
 }
 
-/* ── Modal ───────────────────────────────────────── */
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 2000;
-}
-.modal.hidden { display: none; }
-.modal-content {
-  position: relative;
-  max-width: 95vw;
-  max-height: 90vh;
-}
-.modal-content img {
-  max-width: 100%;
-  max-height: 85vh;
-  border-radius: var(--radius);
-}
-.modal-close {
-  position: absolute;
-  top: -12px;
-  right: -12px;
-  background: var(--accent);
-  border: none;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 1.2rem;
-  width: 32px;
-  height: 32px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 /* ── Responsive ──────────────────────────────────── */
 @media (max-width: 768px) {
   #sidebar {

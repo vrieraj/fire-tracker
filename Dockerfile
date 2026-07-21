@@ -1,23 +1,22 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libproj-dev \
-    cron \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
-COPY src/ src/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libproj-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml requirements.txt ./
 RUN pip install --no-cache-dir -e .
 
-COPY gunicorn.conf.py docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh
+COPY src/ ./src/
+COPY gunicorn.conf.py ./
 
-ENV MPLCONFIGDIR=/tmp
-ENV DB_PATH=/data/fires.db
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
-EXPOSE 7860
+EXPOSE ${PORT:-8000}
 
-ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["gunicorn", "fire_tracker.api.app:app", "-c", "gunicorn.conf.py"]

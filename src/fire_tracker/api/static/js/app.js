@@ -17,10 +17,6 @@
   const btnRefresh = $('#btn-refresh');
   const btnOpen = $('#btn-open-sidebar');
   const btnClose = $('#btn-close-sidebar');
-  const modal = $('#meteogram-modal');
-  const modalImg = $('#meteogram-img');
-  const btnCloseModal = $('#btn-close-modal');
-
   // ── Map layers ─────────────────────────────────────
   const EUMETSAT_WMS = 'https://view.eumetsat.int/geoserver/mtg_fd';
 
@@ -334,7 +330,6 @@
           ${sun ? `<br><span style="font-size:0.78rem;color:#888">☀ ${sun.sunrise} · ☽ ${sun.sunset}</span>` : ''}
           <hr style="margin:4px 0;border-color:#444">
           <div style="display:flex;flex-direction:column;gap:4px">
-            <button onclick="window.openMeteogram(${lat},${lon},'${(p.municipality||'').replace(/'/g, "\\'")}')" style="background:#ef6c35;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>
             <button onclick="window.searchStations(${lat},${lon})" style="background:#3498db;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>
           </div>
           <hr style="margin:4px 0;border-color:#444">
@@ -381,19 +376,6 @@
       fireList.appendChild(li);
     });
   }
-
-  // ── Meteogram modal ────────────────────────────────
-  window.openMeteogram = (lat, lon, name) => {
-    map.closePopup();
-    const url = `/api/meteogram.png?lat=${lat}&lon=${lon}&name=${encodeURIComponent(name)}&forecast_days=2&past_days=0&width=14&height=10`;
-    modalImg.src = url;
-    modal.classList.remove('hidden');
-  };
-
-  btnCloseModal.addEventListener('click', () => modal.classList.add('hidden'));
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) modal.classList.add('hidden');
-  });
 
   // ── Map click → Nominatim reverse + info popup ─────
   map.on('click', (e) => {
@@ -463,7 +445,6 @@
           ${sun ? `<div style="font-size:0.78rem;color:#888;margin:2px 0">☀ ${sun.sunrise} · ☽ ${sun.sunset}</div>` : ''}
           <hr style="margin:4px 0;border-color:#444">
           <div style="display:flex;flex-direction:column;gap:4px">
-            <button onclick="window.openMeteogram(${lat},${lon},'${(locName || '').replace(/'/g, "\\'")}')" style="background:#ef6c35;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>
             <button onclick="window.searchStations(${lat},${lon})" style="background:#3498db;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>
           </div>
           <hr style="margin:4px 0;border-color:#444">

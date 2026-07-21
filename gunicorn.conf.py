@@ -1,11 +1,10 @@
-"""Gunicorn configuration for Fire Tracker."""
-
 import os
 
-bind = '0.0.0.0:7860'
-workers = 2
+bind = f"0.0.0.0:{os.environ.get('PORT', '8000')}"
+workers = 1
+worker_class = "sync"
 timeout = 120
 keepalive = 5
-accesslog = '-'
-errorlog = '-'
-loglevel = os.environ.get('LOG_LEVEL', 'info')
+accesslog = "-"
+errorlog = "-"
+loglevel = os.environ.get("LOG_LEVEL", "info")
