@@ -1,8 +1,8 @@
 """
-Fire Tracker — Gradio UI replica.
+Fire Tracker — Gradio UI with Leaflet map.
 
-Replica the original Flask+Leaflet frontend using Gradio Blocks,
-with softer styling (gr.themes.Soft) and responsive sidebar.
+Full-screen wildfire map with sidebar, served via FastAPI + Gradio 6.
+Designed for Hugging Face Spaces deployment.
 """
 
 from __future__ import annotations
@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 
 import gradio as gr
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 _root = Path(__file__).resolve().parents[2]
 DB_PATH = Path(os.environ.get('DB_PATH', str(_root / 'data' / 'fires.db')))
@@ -24,8 +24,8 @@ from fire_tracker.database import FireDatabase
 from fire_tracker.orchestrator import FireOrchestrator
 from fire_tracker.weather import geocode as wx_geocode, Location
 from fire_tracker.meteogram import meteogram_to_png
-from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
-from fire_tracker.frp import fetch_frp, _get_age_color, _BBOX, _WINDOW_HOURS
+from fire_tracker.wx_stations import fetch_wu_stations_near
+from fire_tracker.frp import _get_age_color, _WINDOW_HOURS
 from fire_tracker.metar import fetch_metar_stations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -51,22 +51,10 @@ SOURCE_LABELS = {
     'fidias_clm': 'FIDIAS (Castilla-La Mancha)',
 }
 
-STATUS_COLORS = {
-    'active': '#e57373', 'declarado': '#e57373',
-    'controlled': '#ffb74d', 'stabilized': '#fff176',
-    'extinguished': '#bdbdbd', 'false_alarm': '#bdbdbd', 'unknown': '#ce93d8',
-}
 
-STATUS_LABELS = {
-    'active': 'Activo', 'declarado': 'Declarado',
-    'controlled': 'Controlado', 'stabilized': 'Estabilizado',
-    'extinguished': 'Extinguido', 'false_alarm': 'Falsa alarma', 'unknown': 'Desconocido',
-}
+# ── Shared GeoJSON builders ──────────────────────────────────────────────────
 
-
-def _get_fires_json() -> str:
-    """Return active fires as GeoJSON string for JS consumption."""
-    fires = _db.get_active_fires()
+def _fires_to_geojson(fires: list[dict]) -> dict:
     features = []
     for f in fires:
         if f.get('latitude') is None or f.get('longitude') is None:
@@ -99,14 +87,11 @@ def _get_fires_json() -> str:
                 'last_updated': f.get('last_updated'),
             },
         })
-    return json.dumps({'type': 'FeatureCollection', 'features': features}, ensure_ascii=False)
+    return {'type': 'FeatureCollection', 'features': features}
 
 
-def _get_frp_json() -> str:
-    """Return FRP detections as GeoJSON string."""
-    from datetime import datetime, timezone
+def _frp_to_geojson(detections: list[dict]) -> dict:
     now = datetime.now(timezone.utc)
-    detections = _db.get_frp_detections(hours=_WINDOW_HOURS)
     features = []
     for d in detections:
         try:
@@ -129,23 +114,26 @@ def _get_frp_json() -> str:
                 'age_hours': round(age_hours, 1),
             },
         })
-    return json.dumps({'type': 'FeatureCollection', 'features': features}, ensure_ascii=False)
+    return {'type': 'FeatureCollection', 'features': features}
+
+
+# ── Gradio callbacks ─────────────────────────────────────────────────────────
+
+def _get_fires_json() -> str:
+    return json.dumps(_fires_to_geojson(_db.get_active_fires()), ensure_ascii=False)
+
+
+def _get_frp_json() -> str:
+    return json.dumps(_frp_to_geojson(_db.get_frp_detections(hours=_WINDOW_HOURS)), ensure_ascii=False)
 
 
 def _do_refresh() -> str:
-    """Run orchestrator and return stats string."""
     orch = FireOrchestrator(DB_PATH)
     stats = orch.run()
     return (
         f"Raw: {stats['total_raw']} → Dedup: {stats['total_after_dedup']} → "
         f"Upserted: {stats['upserted']} (DB: {stats['total_in_db']}) en {stats['duration_s']:.1f}s"
     )
-
-
-def _do_geocode(query: str) -> list[dict]:
-    locations = wx_geocode(query, limit=5)
-    return [{'name': loc.name, 'lat': loc.latitude, 'lon': loc.longitude,
-             'display': loc.display_name} for loc in locations]
 
 
 def _do_meteogram(lat: float, lon: float, name: str):
@@ -157,9 +145,26 @@ def _do_meteogram(lat: float, lon: float, name: str):
     return meteogram_to_png(weather, figsize=(14, 10))
 
 
-# ── FastAPI routes (mounted on Gradio app) ──────────────────────────────────
+# ── FastAPI routes (for JS fetch calls) ──────────────────────────────────────
 
 def _mount_api_routes(app: FastAPI) -> None:
+
+    @app.get('/api/fires/tracked')
+    def api_fires_tracked():
+        return JSONResponse(_fires_to_geojson(_db.get_active_fires()))
+
+    @app.get('/api/frp')
+    def api_frp():
+        return JSONResponse(_frp_to_geojson(_db.get_frp_detections(hours=_WINDOW_HOURS)))
+
+    @app.post('/api/refresh')
+    def api_refresh():
+        try:
+            stats = _do_refresh()
+            return JSONResponse({'ok': True, 'stats': stats})
+        except Exception as e:
+            logger.error('Refresh error: %s', e)
+            return JSONResponse({'ok': False, 'error': str(e)}, status_code=500)
 
     @app.get('/api/geocode')
     def api_geocode(q: str = Query(...), limit: int = Query(5)):
@@ -200,119 +205,71 @@ def _mount_api_routes(app: FastAPI) -> None:
             logger.warning('Meteogram error: %s', e)
             return JSONResponse({'error': str(e)}, status_code=500)
 
-    @app.get('/api/fires/tracked')
-    def api_fires_tracked():
-        fires = _db.get_active_fires()
-        features = []
-        for f in fires:
-            if f.get('latitude') is None or f.get('longitude') is None:
-                continue
-            raw = f.get('raw_data', {})
-            if isinstance(raw, str):
-                try:
-                    raw = json.loads(raw)
-                except (json.JSONDecodeError, TypeError):
-                    raw = {}
-            features.append({
-                'type': 'Feature',
-                'geometry': {'type': 'Point', 'coordinates': [f['longitude'], f['latitude']]},
-                'properties': {
-                    'id': f'{f["source"]}:{f["external_id"]}',
-                    'source': f['source'],
-                    'source_label': SOURCE_LABELS.get(f['source'], f['source']),
-                    'external_id': f['external_id'],
-                    'source_url': f.get('source_url') or SOURCE_MAIN_URLS.get(f['source']),
-                    'chronology_url': raw.get('chronology_url', ''),
-                    'municipality': f.get('municipality'),
-                    'province': f.get('province'),
-                    'region': f.get('region'),
-                    'country': f.get('country'),
-                    'status': f.get('status'),
-                    'fire_type': f.get('fire_type'),
-                    'detection_date': f.get('detection_date'),
-                    'area_ha': f.get('area_ha'),
-                    'resources': f.get('resources'),
-                    'last_updated': f.get('last_updated'),
-                },
-            })
-        return JSONResponse({'type': 'FeatureCollection', 'features': features})
 
-    @app.get('/api/frp')
-    def api_frp():
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        detections = _db.get_frp_detections(hours=_WINDOW_HOURS)
-        features = []
-        for d in detections:
-            try:
-                acq = datetime.fromisoformat(d['acquisition_time'])
-            except (ValueError, TypeError):
-                acq = now
-            age_hours = (now - acq).total_seconds() / 3600.0
-            color, size = _get_age_color(age_hours, d['frp_mw'])
-            features.append({
-                'type': 'Feature',
-                'geometry': {'type': 'Point', 'coordinates': [d['longitude'], d['latitude']]},
-                'properties': {
-                    'frp_mw': round(d['frp_mw'], 1),
-                    'confidence': round(d['confidence'], 1) if d.get('confidence') else 0,
-                    'frp_uncertainty': round(d['frp_uncertainty'], 1) if d.get('frp_uncertainty') else 0,
-                    'pixel_size_km2': round(d['pixel_size_km2'], 2) if d.get('pixel_size_km2') else 0,
-                    'acquisition_time': d['acquisition_time'],
-                    'bt_tir': round(d['bt_tir'], 1) if d.get('bt_tir') else 0,
-                    'color': color, 'radius': size,
-                    'age_hours': round(age_hours, 1),
-                },
-            })
-        return JSONResponse({'type': 'FeatureCollection', 'features': features})
+# ── Head HTML (Leaflet CDN) ──────────────────────────────────────────────────
 
-    @app.post('/api/refresh')
-    def api_refresh():
-        try:
-            stats = _do_refresh()
-            return JSONResponse({'ok': True, 'stats': stats})
-        except Exception as e:
-            logger.error('Refresh error: %s', e)
-            return JSONResponse({'ok': False, 'error': str(e)}, status_code=500)
+HEAD_HTML = """
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+"""
 
 
 # ── CSS ──────────────────────────────────────────────────────────────────────
 
 CSS = """
 :root {
-    --bg: #f8f9fa;
-    --surface: #ffffff;
-    --surface2: #e9ecef;
-    --text: #212529;
-    --text-muted: #6c757d;
-    --accent: #4a90d9;
-    --accent-hover: #3a7bc8;
-    --border: #dee2e6;
+    --bg: #1a1b2e;
+    --surface: #252640;
+    --surface2: #2e3050;
+    --text: #d4d4d8;
+    --text-muted: #9ca3af;
+    --accent: #6b8cce;
+    --accent-hover: #8ba8de;
+    --border: #3a3d5c;
     --radius: 8px;
 }
 
-/* Hide Gradio default elements */
-.gradio-container { max-width: 100% !important; padding: 0 !important; }
-footer, .gr-header, .gr-topbar { display: none !important; }
+/* ── Gradio 6 full-viewport override ── */
+gradio-app { display: block !important; padding: 0 !important; margin: 0 !important; }
+gradio-app > div { padding: 0 !important; margin: 0 !important; }
 
-/* Main layout */
-#fire-app { display: flex; height: calc(100vh - 4px); background: var(--bg); }
+/* Hide Gradio chrome */
+.gradio-container, footer, .gr-header, .gr-topbar, .prose { display: none !important; }
 
-/* Sidebar */
+/* Strip padding from every Gradio wrapper around gr.HTML */
+.gradio-html, .gr-html, .gr-block, .gr-group,
+.gradio-html > div, .gr-html > div, .gr-block > div, .gr-group > div,
+.gradio-container form, .gradio-container > div {
+    padding: 0 !important; margin: 0 !important; border: none !important;
+    background: transparent !important; min-height: 0 !important; overflow: visible !important;
+}
+
+/* Force full viewport on body and html */
+html, body {
+    margin: 0 !important; padding: 0 !important;
+    height: 100vh !important; overflow: hidden !important;
+    background: var(--bg) !important;
+}
+
+/* ── Main layout ── */
+#fire-app { display: flex; height: 100vh; width: 100%; background: var(--bg); overflow: hidden; position: relative; }
+
+/* ── Sidebar ── */
 #fire-sidebar {
     width: 340px; min-width: 340px;
     background: var(--surface);
     border-right: 1px solid var(--border);
     display: flex; flex-direction: column;
-    overflow: hidden;
-    z-index: 1000;
+    overflow: hidden; z-index: 1000;
+    position: relative; height: 100%;
 }
 #fire-sidebar header {
     padding: 16px; border-bottom: 1px solid var(--border);
     display: flex; align-items: center; justify-content: space-between;
 }
 #fire-sidebar header h1 { font-size: 1.2rem; font-weight: 700; color: var(--accent); margin: 0; }
-#sidebar-search { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+#sidebar-search { padding: 12px 16px; border-bottom: 1px solid var(--border); position: relative; }
 #sidebar-search input {
     width: 100%; padding: 8px 12px;
     background: var(--surface2); border: 1px solid var(--border);
@@ -343,14 +300,15 @@ footer, .gr-header, .gr-topbar { display: none !important; }
     margin: 12px 16px; padding: 10px;
     background: var(--accent); border: none; border-radius: var(--radius);
     color: #fff; font-weight: 600; font-size: 0.85rem; cursor: pointer;
+    transition: background 0.15s;
 }
 #btn-refresh:hover { background: var(--accent-hover); }
 
-/* Map area */
-#fire-map-container { flex: 1; position: relative; }
-#fire-map { width: 100%; height: 100%; }
+/* ── Map area ── */
+#fire-map-container { flex: 1; position: relative; min-height: 0; }
+#fire-map { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
 
-/* Mobile sidebar toggle */
+/* ── Mobile sidebar toggle ── */
 #btn-open-sidebar {
     display: none; position: absolute; top: 12px; left: 12px; z-index: 1500;
     background: var(--surface); border: 1px solid var(--border);
@@ -362,7 +320,7 @@ footer, .gr-header, .gr-topbar { display: none !important; }
     font-size: 1.5rem; cursor: pointer; display: none;
 }
 
-/* Meteogram modal */
+/* ── Meteogram modal ── */
 #meteogram-modal {
     position: fixed; inset: 0; background: rgba(0,0,0,0.85);
     display: flex; align-items: center; justify-content: center;
@@ -377,7 +335,17 @@ footer, .gr-header, .gr-topbar { display: none !important; }
     cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
 
-/* Responsive */
+/* ── Station markers ── */
+.station-label {
+    font-family: system-ui, sans-serif; font-size: 11px; text-align: center;
+    background: var(--surface); color: var(--text); padding: 2px 4px;
+    border-radius: 4px; border: 1px solid var(--border);
+    white-space: nowrap; pointer-events: none;
+}
+.station-wind { color: var(--accent); font-weight: 600; }
+.station-temp { color: var(--text-muted); }
+
+/* ── Responsive ── */
 @media (max-width: 768px) {
     #fire-sidebar {
         position: fixed; top: 0; left: -340px;
@@ -388,40 +356,41 @@ footer, .gr-header, .gr-topbar { display: none !important; }
     #btn-close-sidebar { display: block; }
 }
 
-/* Leaflet overrides */
+/* ── Leaflet overrides ── */
 .leaflet-popup-content-wrapper {
-    background: var(--surface) !important;
-    color: var(--text) !important;
-    border-radius: var(--radius) !important;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+    background: var(--surface) !important; color: var(--text) !important;
+    border-radius: var(--radius) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
 }
 .leaflet-popup-tip { background: var(--surface) !important; }
+.leaflet-popup-close-button { color: var(--text-muted) !important; }
+.leaflet-control-layers { background: var(--surface) !important; color: var(--text) !important; }
+.leaflet-control-layers label { color: var(--text) !important; }
 """
+
 
 # ── JavaScript ───────────────────────────────────────────────────────────────
 
 JS_CODE = """
 (() => {
-  // State
   let firesData = {features: []};
   let frpData = {features: []};
   let fireMarkers = {};
   let frpLayer = null;
   let stationLayer = null;
   let searchTimeout = null;
+  let mapReady = false;
 
-  // Wait for Leaflet
-  function waitForLeaflet(cb) {
-    if (window.L) return cb();
-    setTimeout(() => waitForLeaflet(cb), 100);
-  }
+  function initApp() {
+    if (mapReady) return;
+    mapReady = true;
 
-  waitForLeaflet(() => {
     // ── Map init ──
     const EUMETSAT_WMS = 'https://view.eumetsat.int/geoserver/mtg_fd';
     const layers = {
       street: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap', maxZoom: 19 }),
+      darkMatter: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; CartoDB', maxZoom: 19 }),
       googleStreets: L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
         attribution: '&copy; Google', maxZoom: 20, subdomains: '0123' }),
       satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -443,7 +412,7 @@ JS_CODE = """
         version: '1.3.0', crs: L.CRS.EPSG3857, attribution: '&copy; EUMETSAT' }),
     };
 
-    const map = L.map('fire-map', { zoomControl: true, layers: [layers.hybrid] }).setView([40.0, -4.0], 6);
+    const map = L.map('fire-map', { zoomControl: true, layers: [layers.darkMatter] }).setView([40.0, -4.0], 6);
 
     // FRP layer
     frpLayer = L.geoJSON(null, {
@@ -460,19 +429,19 @@ JS_CODE = """
         let dateStr = p.acquisition_time;
         try {
           const dt = new Date(p.acquisition_time);
-          dateStr = `${dt.getUTCDate()} ${months[dt.getUTCMonth()]} ${dt.getUTCFullYear()}, ${String(dt.getUTCHours()).padStart(2,'0')}:${String(dt.getUTCMinutes()).padStart(2,'0')} h UTC`;
+          dateStr = dt.getUTCDate() + ' ' + months[dt.getUTCMonth()] + ' ' + dt.getUTCFullYear() + ', ' +
+            String(dt.getUTCHours()).padStart(2,'0') + ':' + String(dt.getUTCMinutes()).padStart(2,'0') + ' h UTC';
         } catch(e) {}
-        layer.bindPopup(`
-          <div style="font-family:sans-serif;min-width:150px">
-            <strong style="color:${p.color}">FRP Detection</strong>
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="font-size:0.85rem">
-              <b>${dateStr}</b><br>
-              <b>Confianza:</b> ${p.confidence}%<br>
-              <b>FRP:</b> ${p.frp_mw} ± ${p.frp_uncertainty} MW
-            </div>
-          </div>
-        `);
+        layer.bindPopup(
+          '<div style="font-family:sans-serif;min-width:150px">' +
+          '<strong style="color:' + p.color + '">FRP Detection</strong>' +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="font-size:0.85rem">' +
+          '<b>' + dateStr + '</b><br>' +
+          '<b>Confianza:</b> ' + p.confidence + '%<br>' +
+          '<b>FRP:</b> ' + p.frp_mw + ' \\u00b1 ' + p.frp_uncertainty + ' MW' +
+          '</div></div>'
+        );
       },
     });
 
@@ -481,12 +450,13 @@ JS_CODE = """
 
     // Layer control
     const baseLayers = {
+      'CartoDB Dark': layers.darkMatter,
       'OSM Callejero': layers.street,
       'Google Callejero': layers.googleStreets,
-      'Esri Satélite': layers.satellite,
-      'Google Satélite': layers.googleSatellite,
-      'Esri Híbrido': layers.hybrid,
-      'Google Híbrido': layers.googleHybrid,
+      'Esri Sat\\u00e9lite': layers.satellite,
+      'Google Sat\\u00e9lite': layers.googleSatellite,
+      'Esri H\\u00edbrido': layers.hybrid,
+      'Google H\\u00edbrido': layers.googleHybrid,
       'Fire Temperature': layers.fireTemp,
       'GeoColour': layers.geoColour,
     };
@@ -500,171 +470,168 @@ JS_CODE = """
     async function getSunTimes(lat, lon) {
       try {
         const today = new Date().toISOString().split('T')[0];
-        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=sunrise,sunset&timezone=auto&start_date=${today}&end_date=${today}`);
+        const res = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon + '&daily=sunrise,sunset&timezone=auto&start_date=' + today + '&end_date=' + today);
         const data = await res.json();
-        if (data.daily?.sunrise?.[0] && data.daily?.sunset?.[0]) {
-          const fmt = (iso) => { const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+        if (data.daily && data.daily.sunrise && data.daily.sunrise[0] && data.daily.sunset && data.daily.sunset[0]) {
+          const fmt = function(iso) { var d = new Date(iso); return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); };
           return { sunrise: fmt(data.daily.sunrise[0]), sunset: fmt(data.daily.sunset[0]) };
         }
       } catch (e) {}
       return null;
     }
 
-    // ── Render fires on map ──
+    // ── Render fires ──
     function renderFires(geojson) {
-      Object.values(fireMarkers).forEach(m => map.removeLayer(m));
+      Object.values(fireMarkers).forEach(function(m) { map.removeLayer(m); });
       fireMarkers = {};
-      const list = document.getElementById('fire-list');
-      const countEl = document.getElementById('fire-count');
+      var list = document.getElementById('fire-list');
+      var countEl = document.getElementById('fire-count');
       if (!list || !countEl) return;
 
-      const features = (geojson.features || []).filter(f => f.geometry?.coordinates);
+      var features = (geojson.features || []).filter(function(f) { return f.geometry && f.geometry.coordinates; });
       countEl.textContent = features.length + ' incendio' + (features.length !== 1 ? 's' : '') + ' activo' + (features.length !== 1 ? 's' : '');
 
-      const STATUS_COLORS = { active: '#e57373', declarado: '#e57373', controlled: '#ffb74d', stabilized: '#fff176', extinguished: '#bdbdbd', false_alarm: '#bdbdbd', unknown: '#ce93d8' };
-      const STATUS_LABELS = { active: 'Activo', declarado: 'Declarado', controlled: 'Controlado', stabilized: 'Estabilizado', extinguished: 'Extinguido', false_alarm: 'Falsa alarma', unknown: 'Desconocido' };
+      var STATUS_COLORS = { active: '#e57373', declarado: '#e57373', controlled: '#ffb74d', stabilized: '#fff176', extinguished: '#bdbdbd', false_alarm: '#bdbdbd', unknown: '#ce93d8' };
+      var STATUS_LABELS = { active: 'Activo', declarado: 'Declarado', controlled: 'Controlado', stabilized: 'Estabilizado', extinguished: 'Extinguido', false_alarm: 'Falsa alarma', unknown: 'Desconocido' };
 
       list.innerHTML = '';
 
-      features.forEach(f => {
-        const [lon, lat] = f.geometry.coordinates;
-        const p = f.properties;
-        const color = STATUS_COLORS[p.status] || STATUS_COLORS.unknown;
-        const statusLbl = STATUS_LABELS[p.status] || p.status || 'Desconocido';
+      features.forEach(function(f) {
+        var coords = f.geometry.coordinates;
+        var lon = coords[0], lat = coords[1];
+        var p = f.properties;
+        var color = STATUS_COLORS[p.status] || STATUS_COLORS.unknown;
+        var statusLbl = STATUS_LABELS[p.status] || p.status || 'Desconocido';
 
-        // Map marker
-        const marker = L.circleMarker([lat, lon], {
+        var marker = L.circleMarker([lat, lon], {
           radius: 7, fillColor: color, color: '#fff', weight: 1.5, opacity: 0.9, fillOpacity: 0.8,
         }).addTo(map);
 
-        const areaText = p.area_ha ? p.area_ha + ' ha' : 'N/D';
-        const dateText = p.detection_date || '';
-        const sourceUrl = p.source_url || '#';
-        const coordText = `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`;
+        var areaText = p.area_ha ? p.area_ha + ' ha' : 'N/D';
+        var dateText = p.detection_date || '';
+        var sourceUrl = p.source_url || '#';
+        var coordText = Math.abs(lat).toFixed(4) + '\\u00b0 ' + (lat >= 0 ? 'N' : 'S') + ', ' + Math.abs(lon).toFixed(4) + '\\u00b0 ' + (lon >= 0 ? 'E' : 'W');
 
-        marker.bindPopup(`
-          <div style="font-family:sans-serif;min-width:200px">
-            <strong>${p.municipality || p.external_id}</strong><br>
-            <small>${p.province ? p.province + ', ' : ''}${p.region || ''}</small>
-            <div style="font-size:0.78rem;color:#666;margin:2px 0">${coordText}</div>
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
-              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color}"></span>
-              <span>Estado: <b>${statusLbl}</b></span>
-            </div>
-            <span>Area: <b>${areaText}</b></span><br>
-            ${dateText ? '<span>Deteccion: ' + dateText + '</span><br>' : ''}
-            <span>Fuente: <a href="' + sourceUrl + '" target="_blank" style="color:#4a90d9">' + p.source_label + '</a></span>
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="display:flex;flex-direction:column;gap:4px">
-              <button onclick="window._openMeteogram(${lat},${lon},'${(p.municipality||'').replace(/'/g, "\\'")}')" style="background:#4a90d9;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>
-              <button onclick="window._searchStations(${lat},${lon})" style="background:#4a90d9;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>
-            </div>
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <a href="https://www.windy.com/${lat}/${lon}" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Windy ↗</a>
-              <a href="https://www.meteoblue.com/en/weather/week/${lat},${lon}" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Meteoblue ↗</a>
-              <a href="https://www.google.com/maps/@${lat},${lon},12z" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Google Maps ↗</a>
-            </div>
-          </div>
-        `);
+        var safeMunicipality = (p.municipality || '').replace(/'/g, "\\\\'");
+
+        marker.bindPopup(
+          '<div style="font-family:sans-serif;min-width:200px">' +
+          '<strong>' + (p.municipality || p.external_id) + '</strong><br>' +
+          '<small style="color:#9ca3af">' + (p.province ? p.province + ', ' : '') + (p.region || '') + '</small>' +
+          '<div style="font-size:0.78rem;color:#9ca3af;margin:2px 0">' + coordText + '</div>' +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">' +
+          '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:' + color + '"></span>' +
+          '<span>Estado: <b>' + statusLbl + '</b></span></div>' +
+          '<span>\\u00c1rea: <b>' + areaText + '</b></span><br>' +
+          (dateText ? '<span>Detecci\\u00f3n: ' + dateText + '</span><br>' : '') +
+          '<span>Fuente: <a href="' + sourceUrl + '" target="_blank" style="color:#6b8cce">' + p.source_label + '</a></span>' +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<button onclick="window._openMeteogram(' + lat + ',' + lon + ',\\'' + safeMunicipality + '\\')" style="background:#6b8cce;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>' +
+          '<button onclick="window._searchStations(' + lat + ',' + lon + ')" style="background:#6b8cce;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>' +
+          '</div>' +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          '<a href="https://www.windy.com/' + lat + '/' + lon + '" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Windy \\u2197</a>' +
+          '<a href="https://www.meteoblue.com/en/weather/week/' + lat + ',' + lon + '" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Meteoblue \\u2197</a>' +
+          '<a href="https://www.google.com/maps/@' + lat + ',' + lon + ',12z" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Google Maps \\u2197</a>' +
+          '</div></div>'
+        );
 
         fireMarkers[p.id] = marker;
 
-        // Sidebar list item
-        const li = document.createElement('div');
+        var li = document.createElement('div');
         li.className = 'fire-item';
-        li.innerHTML = `
-          <div class="fire-name">${p.municipality || p.external_id}</div>
-          <div class="fire-meta">${p.province ? p.province + ', ' : ''}${p.region || ''}</div>
-          <div class="fire-tags">
-            <span class="fire-status" style="background:${color}">${statusLbl}</span>
-            <span class="fire-source">${p.source_label}</span>
-            ${p.area_ha ? '<span class="fire-area">' + p.area_ha + ' ha</span>' : ''}
-            ${dateText ? '<span class="fire-date">' + dateText.split('T')[0] + '</span>' : ''}
-          </div>
-        `;
-        li.addEventListener('click', () => {
-          map.setView([lat, lon], 12);
-          marker.openPopup();
-        });
+        li.innerHTML =
+          '<div class="fire-name">' + (p.municipality || p.external_id) + '</div>' +
+          '<div class="fire-meta">' + (p.province ? p.province + ', ' : '') + (p.region || '') + '</div>' +
+          '<div class="fire-tags">' +
+          '<span class="fire-status" style="background:' + color + '">' + statusLbl + '</span>' +
+          '<span class="fire-source">' + p.source_label + '</span>' +
+          (p.area_ha ? '<span class="fire-area">' + p.area_ha + ' ha</span>' : '') +
+          (dateText ? '<span class="fire-date">' + dateText.split('T')[0] + '</span>' : '') +
+          '</div>';
+        li.addEventListener('click', (function(lat, lon, marker) {
+          return function() { map.setView([lat, lon], 12); marker.openPopup(); };
+        })(lat, lon, marker));
         list.appendChild(li);
       });
 
-      Object.values(fireMarkers).forEach(m => m.bringToFront());
+      Object.values(fireMarkers).forEach(function(m) { m.bringToFront(); });
     }
 
     // ── Meteogram modal ──
-    window._openMeteogram = (lat, lon, name) => {
+    window._openMeteogram = function(lat, lon, name) {
       map.closePopup();
-      const modal = document.getElementById('meteogram-modal');
-      const img = document.getElementById('meteogram-img');
+      var modal = document.getElementById('meteogram-modal');
+      var img = document.getElementById('meteogram-img');
       if (modal && img) {
-        img.src = `/api/meteogram?lat=${lat}&lon=${lon}&name=${encodeURIComponent(name)}`;
+        img.src = '/api/meteogram?lat=' + lat + '&lon=' + lon + '&name=' + encodeURIComponent(name);
         modal.classList.remove('hidden');
       }
     };
 
-    const closeModal = document.getElementById('btn-close-modal');
-    const modal = document.getElementById('meteogram-modal');
-    if (closeModal) closeModal.addEventListener('click', () => modal.classList.add('hidden'));
-    if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+    var closeModal = document.getElementById('btn-close-modal');
+    var modal = document.getElementById('meteogram-modal');
+    if (closeModal) closeModal.addEventListener('click', function() { modal.classList.add('hidden'); });
+    if (modal) modal.addEventListener('click', function(e) { if (e.target === modal) modal.classList.add('hidden'); });
 
     // ── Map click → reverse geocode ──
-    map.on('click', async (e) => {
+    map.on('click', async function(e) {
       if (e.originalEvent.target.closest('.leaflet-marker-icon') || e.originalEvent.target.closest('.leaflet-interactive')) return;
-      const { lat, lng } = e.latlng;
-      const popup = L.popup().setLatLng([lat, lng])
-        .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px"><div style="font-size:0.8rem;color:#666">Buscando ubicacion...</div></div>')
+      var lat = e.latlng.lat, lng = e.latlng.lng;
+      var popup = L.popup().setLatLng([lat, lng])
+        .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px"><div style="font-size:0.8rem;color:#9ca3af">Buscando ubicaci\\u00f3n...</div></div>')
         .openOn(map);
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=es`, { headers: { 'User-Agent': 'FireTracker/1.0' } });
-        const data = await res.json();
-        const addr = data.address || {};
-        const name = data.name || addr.city || addr.town || addr.village || addr.hamlet || '';
-        const locLine = [addr.city||addr.town||addr.village||addr.hamlet, addr.state||addr.county, addr.autonomous_community||addr.region, addr.country].filter(Boolean).join(', ');
-        const sun = await getSunTimes(lat, lng);
-        popup.setContent(`
-          <div style="font-family:sans-serif;min-width:200px">
-            ${name ? '<strong>' + name + '</strong><br>' : ''}
-            ${locLine ? '<small style="color:#888">' + locLine + '</small><br>' : ''}
-            <div style="font-size:0.78rem;color:#666;margin:2px 0">${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lng).toFixed(4)}° ${lng >= 0 ? 'E' : 'W'}</div>
-            ${sun ? '<div style="font-size:0.78rem;color:#888;margin:2px 0">☀ ' + sun.sunrise + ' · ☽ ' + sun.sunset + '</div>' : ''}
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="display:flex;flex-direction:column;gap:4px">
-              <button onclick="window._openMeteogram(${lat},${lng},'${(name||'').replace(/'/g, "\\'")}')" style="background:#4a90d9;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>
-              <button onclick="window._searchStations(${lat},${lng})" style="background:#4a90d9;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>
-            </div>
-            <hr style="margin:4px 0;border-color:#ddd">
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <a href="https://www.windy.com/${lat}/${lng}" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Windy ↗</a>
-              <a href="https://www.meteoblue.com/en/weather/week/${lat},${lng}" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Meteoblue ↗</a>
-              <a href="https://www.google.com/maps/@${lat},${lng},12z" target="_blank" style="color:#4a90d9;font-size:0.78rem;text-decoration:none">Google Maps ↗</a>
-            </div>
-          </div>
-        `);
+        var res = await fetch('https://nominatim.openstreetmap.org/reverse?lat=' + lat + '&lon=' + lng + '&format=json&accept-language=es', { headers: { 'User-Agent': 'FireTracker/1.0' } });
+        var data = await res.json();
+        var addr = data.address || {};
+        var name = data.name || addr.city || addr.town || addr.village || addr.hamlet || '';
+        var locLine = [addr.city||addr.town||addr.village||addr.hamlet, addr.state||addr.county, addr.autonomous_community||addr.region, addr.country].filter(Boolean).join(', ');
+        var sun = await getSunTimes(lat, lng);
+        var safeName = (name || '').replace(/'/g, "\\\\'");
+        popup.setContent(
+          '<div style="font-family:sans-serif;min-width:200px">' +
+          (name ? '<strong>' + name + '</strong><br>' : '') +
+          (locLine ? '<small style="color:#9ca3af">' + locLine + '</small><br>' : '') +
+          '<div style="font-size:0.78rem;color:#9ca3af;margin:2px 0">' + Math.abs(lat).toFixed(4) + '\\u00b0 ' + (lat >= 0 ? 'N' : 'S') + ', ' + Math.abs(lng).toFixed(4) + '\\u00b0 ' + (lng >= 0 ? 'E' : 'W') + '</div>' +
+          (sun ? '<div style="font-size:0.78rem;color:#9ca3af;margin:2px 0">\\u2600 ' + sun.sunrise + ' \\u00b7 \\u263d ' + sun.sunset + '</div>' : '') +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="display:flex;flex-direction:column;gap:4px">' +
+          '<button onclick="window._openMeteogram(' + lat + ',' + lng + ',\\'' + safeName + '\\')" style="background:#6b8cce;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Meteograma</button>' +
+          '<button onclick="window._searchStations(' + lat + ',' + lng + ')" style="background:#6b8cce;border:none;color:#fff;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:0.8rem;width:100%">Buscar estaciones</button>' +
+          '</div>' +
+          '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          '<a href="https://www.windy.com/' + lat + '/' + lng + '" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Windy \\u2197</a>' +
+          '<a href="https://www.meteoblue.com/en/weather/week/' + lat + ',' + lng + '" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Meteoblue \\u2197</a>' +
+          '<a href="https://www.google.com/maps/@' + lat + ',' + lng + ',12z" target="_blank" style="color:#6b8cce;font-size:0.78rem;text-decoration:none">Google Maps \\u2197</a>' +
+          '</div></div>'
+        );
       } catch (e) {
-        popup.setContent('<div style="font-family:sans-serif;text-align:center;padding:8px">Error en reverse geocode</div>');
+        popup.setContent('<div style="font-family:sans-serif;text-align:center;padding:8px;color:#9ca3af">Error en reverse geocode</div>');
       }
     });
 
     // ── Station search ──
-    window._searchStations = async (lat, lon) => {
+    window._searchStations = async function(lat, lon) {
       map.closePopup();
       stationLayer.clearLayers();
       if (!map.hasLayer(stationLayer)) stationLayer.addTo(map);
 
-      const popup = L.popup().setLatLng([lat, lon])
-        .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px">Buscando estaciones...</div>')
+      var popup = L.popup().setLatLng([lat, lon])
+        .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px;color:#9ca3af">Buscando estaciones...</div>')
         .openOn(map);
 
       try {
-        const [wuRes, metarRes] = await Promise.allSettled([
-          fetch('/api/stations?lat=' + lat + '&lon=' + lon + '&radius_km=30').then(r => r.json()),
-          fetch('/api/metar').then(r => r.json()),
+        var results = await Promise.allSettled([
+          fetch('/api/stations?lat=' + lat + '&lon=' + lon + '&radius_km=30').then(function(r) { return r.json(); }),
+          fetch('/api/metar').then(function(r) { return r.json(); }),
         ]);
         popup.close();
-        let count = 0;
+        var count = 0;
 
         function kmhToBeaufort(kmh) {
           if (kmh < 1) return 0; if (kmh <= 5) return 1; if (kmh <= 11) return 2;
@@ -674,55 +641,55 @@ JS_CODE = """
           return 12;
         }
         function getWindArrow(deg) {
-          const arrows = ['↓','↙','←','↖','↑','↗','→','↘'];
+          var arrows = ['\\u2193','\\u2199','\\u2190','\\u2196','\\u2191','\\u2197','\\u2192','\\u2198'];
           return arrows[Math.round(deg / 45) % 8];
         }
 
         function addStation(s) {
-          const { lat: slat, lon: slon } = s;
-          const temp = s.temp_c, hum = s.humidity_pct, wspd = s.windspeed_kmh, wdir = s.winddir_avg;
-          const arrow = wdir != null ? getWindArrow(wdir) : '';
-          const beauf = wspd != null ? kmhToBeaufort(wspd) : null;
-          const windText = wspd != null ? arrow + ' ' + beauf + ' (' + wspd + ')' : '';
-          const tempRh = [temp != null ? temp + '°' : '', hum != null ? hum + '%' : ''].filter(Boolean).join(' · ');
-          const icon = L.divIcon({
+          var slat = s.lat, slon = s.lon;
+          var temp = s.temp_c, hum = s.humidity_pct, wspd = s.windspeed_kmh, wdir = s.winddir_avg;
+          var arrow = wdir != null ? getWindArrow(wdir) : '';
+          var beauf = wspd != null ? kmhToBeaufort(wspd) : null;
+          var windText = wspd != null ? arrow + ' ' + beauf + ' (' + wspd + ')' : '';
+          var tempRh = [temp != null ? temp + '\\u00b0' : '', hum != null ? hum + '%' : ''].filter(Boolean).join(' \\u00b7 ');
+          var icon = L.divIcon({
             className: 'station-marker',
             html: '<div class="station-label"><div class="station-wind">' + windText + '</div><div class="station-temp">' + tempRh + '</div></div>',
             iconSize: [60, 36], iconAnchor: [30, 18],
           });
-          const marker = L.marker([slat, slon], { icon }).addTo(stationLayer);
-          const isMetar = s.platform === 'METAR';
-          const srcUrl = isMetar ? 'https://metar-taf.com/es/' + s.stationId : 'https://www.wunderground.com/dashboard/pws/' + s.stationId;
-          const srcLbl = isMetar ? 'METAR-TAF ↗' : 'Weather Underground ↗';
-          marker.bindPopup(`
-            <div style="font-family:sans-serif;min-width:180px">
-              <strong>${s.name || s.stationId}</strong><br>
-              <small style="color:#888">${s.adm1 || ''} ${s.country_name || s.country || ''} · ${s.stationId}</small>
-              <hr style="margin:4px 0;border-color:#ddd">
-              <div style="font-size:0.85rem">
-                Temp: <b>${temp != null ? temp + ' °C' : 'N/D'}</b><br>
-                HR: <b>${hum != null ? hum + ' %' : 'N/D'}</b><br>
-                Viento: <b>${wspd != null ? beauf + ' (' + wspd + ') km/h' : 'N/D'}</b><br>
-                Direccion: <b>${wdir != null ? wdir + '°' : 'N/D'}</b><br>
-                ${s.windgust_kmh ? 'Rafagas: ' + s.windgust_kmh + ' km/h<br>' : ''}
-                ${s.pressure_hpa ? 'Presion: ' + s.pressure_hpa + ' hPa<br>' : ''}
-              </div>
-              <hr style="margin:4px 0;border-color:#ddd">
-              <div style="font-size:0.78rem;color:#888">
-                Altitud: ${s.elev_m != null ? s.elev_m + ' m' : 'N/D'}${s.distance_km ? ' · ' + s.distance_km + ' km' : ''}
-              </div>
-              <hr style="margin:4px 0;border-color:#ddd">
-              <a href="${srcUrl}" target="_blank" style="color:#4a90d9;font-size:0.8rem;text-decoration:none">${srcLbl}</a>
-            </div>
-          `);
+          var marker = L.marker([slat, slon], { icon: icon }).addTo(stationLayer);
+          var isMetar = s.platform === 'METAR';
+          var srcUrl = isMetar ? 'https://metar-taf.com/es/' + s.stationId : 'https://www.wunderground.com/dashboard/pws/' + s.stationId;
+          var srcLbl = isMetar ? 'METAR-TAF \\u2197' : 'Weather Underground \\u2197';
+          marker.bindPopup(
+            '<div style="font-family:sans-serif;min-width:180px">' +
+            '<strong>' + (s.name || s.stationId) + '</strong><br>' +
+            '<small style="color:#9ca3af">' + (s.adm1 || '') + ' ' + (s.country_name || s.country || '') + ' \\u00b7 ' + s.stationId + '</small>' +
+            '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+            '<div style="font-size:0.85rem">' +
+            'Temp: <b>' + (temp != null ? temp + ' \\u00b0C' : 'N/D') + '</b><br>' +
+            'HR: <b>' + (hum != null ? hum + ' %' : 'N/D') + '</b><br>' +
+            'Viento: <b>' + (wspd != null ? beauf + ' (' + wspd + ') km/h' : 'N/D') + '</b><br>' +
+            'Direcci\\u00f3n: <b>' + (wdir != null ? wdir + '\\u00b0' : 'N/D') + '</b><br>' +
+            (s.windgust_kmh ? 'R\\u00e1fagas: ' + s.windgust_kmh + ' km/h<br>' : '') +
+            (s.pressure_hpa ? 'Presi\\u00f3n: ' + s.pressure_hpa + ' hPa<br>' : '') +
+            '</div>' +
+            '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+            '<div style="font-size:0.78rem;color:#9ca3af">' +
+            'Altitud: ' + (s.elev_m != null ? s.elev_m + ' m' : 'N/D') + (s.distance_km ? ' \\u00b7 ' + s.distance_km + ' km' : '') +
+            '</div>' +
+            '<hr style="margin:4px 0;border-color:#3a3d5c">' +
+            '<a href="' + srcUrl + '" target="_blank" style="color:#6b8cce;font-size:0.8rem;text-decoration:none">' + srcLbl + '</a>' +
+            '</div>'
+          );
           count++;
         }
 
-        if (wuRes.status === 'fulfilled' && wuRes.value?.stations) wuRes.value.stations.forEach(addStation);
-        if (metarRes.status === 'fulfilled' && metarRes.value?.stations) metarRes.value.stations.forEach(addStation);
+        if (results[0].status === 'fulfilled' && results[0].value && results[0].value.stations) results[0].value.stations.forEach(addStation);
+        if (results[1].status === 'fulfilled' && results[1].value && results[1].value.stations) results[1].value.stations.forEach(addStation);
         if (count === 0) {
           L.popup().setLatLng([lat, lon])
-            .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px">No se encontraron estaciones cercanas</div>')
+            .setContent('<div style="font-family:sans-serif;text-align:center;padding:8px;color:#9ca3af">No se encontraron estaciones cercanas</div>')
             .openOn(map);
         }
       } catch (e) {
@@ -732,32 +699,32 @@ JS_CODE = """
     };
 
     // ── Sidebar toggle (mobile) ──
-    const btnOpen = document.getElementById('btn-open-sidebar');
-    const btnClose = document.getElementById('btn-close-sidebar');
-    const sidebar = document.getElementById('fire-sidebar');
-    if (btnOpen) btnOpen.addEventListener('click', () => sidebar.classList.add('open'));
-    if (btnClose) btnClose.addEventListener('click', () => sidebar.classList.remove('open'));
+    var btnOpen = document.getElementById('btn-open-sidebar');
+    var btnClose = document.getElementById('btn-close-sidebar');
+    var sidebar = document.getElementById('fire-sidebar');
+    if (btnOpen) btnOpen.addEventListener('click', function() { sidebar.classList.add('open'); });
+    if (btnClose) btnClose.addEventListener('click', function() { sidebar.classList.remove('open'); });
 
     // ── Geocode search ──
-    const searchInput = document.getElementById('sidebar-search-input');
-    const searchResults = document.getElementById('sidebar-search-results');
+    var searchInput = document.getElementById('sidebar-search-input');
+    var searchResults = document.getElementById('sidebar-search-results');
     if (searchInput) {
-      searchInput.addEventListener('input', () => {
+      searchInput.addEventListener('input', function() {
         clearTimeout(searchTimeout);
-        const q = searchInput.value.trim();
+        var q = searchInput.value.trim();
         if (q.length < 2) { if (searchResults) searchResults.style.display = 'none'; return; }
-        searchTimeout = setTimeout(async () => {
+        searchTimeout = setTimeout(async function() {
           try {
-            const res = await fetch('/api/geocode?q=' + encodeURIComponent(q) + '&limit=5');
-            const data = await res.json();
-            if (!data.results?.length) { if (searchResults) searchResults.style.display = 'none'; return; }
+            var res = await fetch('/api/geocode?q=' + encodeURIComponent(q) + '&limit=5');
+            var data = await res.json();
+            if (!data.results || !data.results.length) { if (searchResults) searchResults.style.display = 'none'; return; }
             if (searchResults) {
               searchResults.innerHTML = '';
-              data.results.forEach(loc => {
-                const li = document.createElement('li');
+              data.results.forEach(function(loc) {
+                var li = document.createElement('li');
                 li.textContent = loc.display_name || loc.name;
-                li.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:0.85rem;border-bottom:1px solid #dee2e6';
-                li.addEventListener('click', () => {
+                li.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:0.85rem;border-bottom:1px solid #3a3d5c';
+                li.addEventListener('click', function() {
                   map.setView([loc.latitude, loc.longitude], 11);
                   searchResults.style.display = 'none';
                   searchInput.value = loc.name;
@@ -771,55 +738,60 @@ JS_CODE = """
       });
     }
 
-    // ── Expose data update functions ──
-    window._updateFires = (jsonStr) => {
+    // ── Expose data update functions for Gradio callbacks ──
+    window._updateFires = function(jsonStr) {
       try { firesData = JSON.parse(jsonStr); renderFires(firesData); } catch (e) { console.error('Parse error:', e); }
     };
-    window._updateFRP = (jsonStr) => {
-      try { frpData = JSON.parse(jsonStr); frpLayer.clearLayers(); if (frpData.features?.length) frpLayer.addData(frpData); } catch (e) { console.error('FRP parse error:', e); }
+    window._updateFRP = function(jsonStr) {
+      try { frpData = JSON.parse(jsonStr); frpLayer.clearLayers(); if (frpData.features && frpData.features.length) frpLayer.addData(frpData); } catch (e) { console.error('FRP parse error:', e); }
     };
 
-    window._doRefresh = async () => {
-      const btn = document.getElementById('btn-refresh');
+    window._doRefresh = async function() {
+      var btn = document.getElementById('btn-refresh');
       if (btn) { btn.textContent = 'Actualizando...'; btn.disabled = true; }
       try {
-        const res = await fetch('/api/refresh', { method: 'POST' });
-        const data = await res.json();
+        var res = await fetch('/api/refresh', { method: 'POST' });
+        var data = await res.json();
         if (data.ok) {
-          const [firesRes, frpRes] = await Promise.all([
-            fetch('/api/fires/tracked').then(r => r.json()),
-            fetch('/api/frp').then(r => r.json()),
+          var results = await Promise.all([
+            fetch('/api/fires/tracked').then(function(r) { return r.json(); }),
+            fetch('/api/frp').then(function(r) { return r.json(); }),
           ]);
-          window._updateFires(JSON.stringify(firesRes));
-          window._updateFRP(JSON.stringify(frpRes));
+          window._updateFires(JSON.stringify(results[0]));
+          window._updateFRP(JSON.stringify(results[1]));
         }
       } catch (e) { console.error('Refresh error:', e); }
       if (btn) { btn.textContent = 'Actualizar datos'; btn.disabled = false; }
     };
+  }
 
-    // ── Initial load via Gradio ──
-    // Triggered by Gradio's load event calling Python functions
-    window._triggerLoad = () => {
-      // Dispatch custom event that Gradio can listen to
-      document.dispatchEvent(new CustomEvent('fire-tracker-load'));
-    };
-  });
+  // Wait for DOM and Leaflet to be ready
+  function checkReady() {
+    var mapEl = document.getElementById('fire-map');
+    if (mapEl && window.L) { initApp(); return; }
+    setTimeout(checkReady, 100);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkReady);
+  } else {
+    checkReady();
+  }
 })();
 """
 
 
 # ── HTML templates ───────────────────────────────────────────────────────────
 
-MAP_HTML = f"""
+MAP_HTML = """
 <div id="fire-app">
   <div id="fire-sidebar">
     <header>
-      <h1>🔥 Fire Tracker</h1>
+      <h1>&#x1F525; Fire Tracker</h1>
       <button id="btn-close-sidebar" aria-label="Cerrar">&times;</button>
     </header>
     <div id="sidebar-search">
-      <input type="text" id="sidebar-search-input" placeholder="Buscar ubicacion..." autocomplete="off" />
-      <ul id="sidebar-search-results" style="display:none;position:absolute;left:16px;right:16px;background:#fff;border:1px solid #dee2e6;border-radius:8px;list-style:none;max-height:200px;overflow-y:auto;z-index:1000;padding:0;margin:0"></ul>
+      <input type="text" id="sidebar-search-input" placeholder="Buscar ubicaci\u00f3n..." autocomplete="off" />
+      <ul id="sidebar-search-results" style="display:none;position:absolute;left:16px;right:16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;list-style:none;max-height:200px;overflow-y:auto;z-index:1000;padding:0;margin:0"></ul>
     </div>
     <div id="fire-count">Cargando...</div>
     <div id="fire-list"></div>
@@ -837,36 +809,55 @@ MAP_HTML = f"""
 """
 
 
-# ── Gradio app ───────────────────────────────────────────────────────────────
+# ── Gradio + FastAPI app ─────────────────────────────────────────────────────
 
 def build_app() -> FastAPI:
     app = FastAPI(title='Fire Tracker')
     _mount_api_routes(app)
 
-    theme = gr.themes.Soft(
-        primary_hue='blue',
-        neutral_hue='gray',
+    theme = gr.themes.Base(
+        primary_hue='slate',
+        neutral_hue='slate',
         font=['system-ui', 'sans-serif'],
+    ).set(
+        body_background_fill='#1a1b2e',
+        body_background_fill_dark='#1a1b2e',
+        body_text_color='#d4d4d8',
+        body_text_color_dark='#d4d4d8',
+        block_background_fill='#252640',
+        block_background_fill_dark='#252640',
+        block_border_color='#3a3d5c',
+        block_border_color_dark='#3a3d5c',
+        block_label_text_color='#9ca3af',
+        block_title_text_color='#d4d4d8',
+        input_background_fill='#2e3050',
+        input_background_fill_dark='#2e3050',
+        input_border_color='#3a3d5c',
+        button_primary_background_fill='#6b8cce',
+        button_primary_background_fill_dark='#6b8cce',
+        button_primary_text_color='#ffffff',
+        slider_color='#6b8cce',
     )
 
     with gr.Blocks(title='Fire Tracker') as demo:
-        fires_json = gr.State('')
-        frp_json = gr.State('')
-        gr.HTML(MAP_HTML)
         fires_output = gr.Textbox(visible=False)
         frp_output = gr.Textbox(visible=False)
 
-        demo.load(fn=_get_fires_json, outputs=[fires_output]).then(
-            fn=None, js="""(json) => { window._updateFires(json); }""", inputs=[fires_output])
-        demo.load(fn=_get_frp_json, outputs=[frp_output]).then(
-            fn=None, js="""(json) => { window._updateFRP(json); }""", inputs=[frp_output])
+        gr.HTML(MAP_HTML)
 
-    gr.mount_gradio_app(app, demo, path='/',
-                        theme=theme, css=CSS, js=JS_CODE)
+        demo.load(fn=_get_fires_json, outputs=[fires_output]).then(
+            fn=None, js="(json) => { if (window._updateFires) window._updateFires(json); }", inputs=[fires_output])
+        demo.load(fn=_get_frp_json, outputs=[frp_output]).then(
+            fn=None, js="(json) => { if (window._updateFRP) window._updateFRP(json); }", inputs=[frp_output])
+
+    gr.mount_gradio_app(app, demo, path='/', theme=theme, css=CSS, js=JS_CODE, head=HEAD_HTML)
     return app
 
 
+# ── Entry point ──────────────────────────────────────────────────────────────
+
+app = build_app()
+
 if __name__ == '__main__':
     import uvicorn
-    app = build_app()
     uvicorn.run(app, host='0.0.0.0', port=7860)

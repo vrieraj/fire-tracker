@@ -14,5 +14,5 @@ chmod 0644 /etc/cron.d/fire-tracker-cron
 crontab /etc/cron.d/fire-tracker-cron
 service cron start 2>/dev/null || cron
 
-echo "[entrypoint] Starting gunicorn on :7860..."
-exec gunicorn -c gunicorn.conf.py fire_tracker.api.app:app
+echo "[entrypoint] Starting gunicorn (Gradio app) on :7860..."
+exec gunicorn -c gunicorn.conf.py fire_tracker.gradio_app:app

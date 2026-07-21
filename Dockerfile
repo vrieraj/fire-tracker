@@ -17,6 +17,7 @@ RUN chmod +x docker-entrypoint.sh
 
 ENV MPLCONFIGDIR=/tmp
 ENV DB_PATH=/data/fires.db
+ENV GRADIO_SERVER_NAME=0.0.0.0
 
 EXPOSE 7860
 
