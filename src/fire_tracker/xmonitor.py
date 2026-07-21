@@ -106,11 +106,11 @@ def _extract_location(text: str) -> str:
     if if_municipality:
         return if_municipality
 
-    match = re.search(r'\ben\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})', text)
+    match = re.search(r'\ben\s+([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,})', text)
     if match:
         return match.group(1)
 
-    match = re.search(r'municipio\s+de\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})', text)
+    match = re.search(r'municipio\s+de\s+([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{2,})', text)
     if match:
         return match.group(1)
 

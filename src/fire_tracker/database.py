@@ -480,7 +480,7 @@ class FireDatabase:
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT * FROM frp_detections "
-                    "WHERE acquisition_time >= NOW() - INTERVAL '%s hours' "
+                    "WHERE acquisition_time::timestamp >= NOW() - make_interval(hours => %s) "
                     "ORDER BY acquisition_time ASC",
                     (hours,),
                 )
@@ -506,7 +506,7 @@ class FireDatabase:
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT COUNT(*) FROM frp_detections "
-                    "WHERE acquisition_time >= NOW() - INTERVAL '%s hours'",
+                    "WHERE acquisition_time::timestamp >= NOW() - make_interval(hours => %s)",
                     (hours,),
                 )
                 return cur.fetchone()[0]
@@ -536,7 +536,7 @@ class FireDatabase:
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT * FROM frp_detections "
-                    "WHERE acquisition_time >= NOW() - INTERVAL '%s hours' "
+                    "WHERE acquisition_time::timestamp >= NOW() - make_interval(hours => %s) "
                     "AND latitude BETWEEN %s AND %s "
                     "AND longitude BETWEEN %s AND %s "
                     "AND confidence >= %s "

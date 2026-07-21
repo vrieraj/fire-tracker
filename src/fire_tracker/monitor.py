@@ -55,12 +55,8 @@ def _is_duplicate(db: FireDatabase, tweet: XTweet, location: FireLocation) -> bo
 
     fires = db.get_active_fires()
     for f in fires:
-        if (f.get('municipality') and f['municipality'] == location.municipality
-                and f.get('latitude') and f.get('longitude')):
-            lat_diff = abs(f['latitude'] - location.latitude)
-            lon_diff = abs(f['longitude'] - location.longitude)
-            if lat_diff < 0.1 and lon_diff < 0.1:
-                return True
+        if f.get('municipality') and f['municipality'] == location.municipality:
+            return True
 
     return False
 
