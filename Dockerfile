@@ -9,10 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml requirements.txt ./
-RUN pip install --no-cache-dir -e .
-
 COPY src/ ./src/
 COPY gunicorn.conf.py ./
+RUN pip install --no-cache-dir .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
