@@ -210,6 +210,11 @@ def _mount_api_routes(app: FastAPI) -> None:
         from fastapi.responses import HTMLResponse
         return HTMLResponse(content=_build_map_html())
 
+    @app.get('/')
+    def root_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url='/map')
+
 
 # ── Head HTML (Leaflet CDN) ──────────────────────────────────────────────────
 
@@ -924,7 +929,7 @@ def build_app() -> FastAPI:
         demo.load(fn=_get_frp_json, outputs=[frp_output]).then(
             fn=None, js="(json) => { if (window._updateFRP) window._updateFRP(json); }", inputs=[frp_output])
 
-    gr.mount_gradio_app(app, demo, path='/', theme=theme, css=CSS, js=JS_CODE, head=HEAD_HTML)
+    gr.mount_gradio_app(app, demo, path='/gradio', theme=theme, css=CSS, js=JS_CODE, head=HEAD_HTML)
     return app
 
 
