@@ -354,7 +354,7 @@ class FireDatabase:
                 cur = conn.cursor()
                 cur.execute(
                     "DELETE FROM fires WHERE status = 'extinguished' "
-                    "AND last_updated < NOW() - INTERVAL '%s days'",
+                    "AND last_updated::timestamp < NOW() - make_interval(days => %s)",
                     (older_than_days,),
                 )
                 conn.commit()
