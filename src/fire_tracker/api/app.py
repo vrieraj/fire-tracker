@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 from dotenv import load_dotenv
 
+_here = Path(__file__).resolve().parent
 _root = Path(__file__).resolve().parents[3]
 load_dotenv(_root / '.env')
 if str(_root / 'src') not in sys.path:
@@ -57,7 +58,7 @@ SOURCE_LABELS = {
 
 @app.route('/')
 def index():
-    return send_from_directory('static', 'index.html')
+    return send_from_directory(str(_here / 'static'), 'index.html')
 
 
 @app.route('/api/fires/tracked')
