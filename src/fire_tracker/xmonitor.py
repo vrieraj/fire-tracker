@@ -165,79 +165,6 @@ def _parse_tweet_from_json(data: dict) -> XTweet | None:
         return None
 
 
-async def _search_x_com(query: str, hours_back: int = 2) -> list[XTweet]:
-    """Search X.com using Playwright with cookie authentication."""
-    from playwright.async_api import async_playwright
-
-    auth_token = get_x_auth_token()
-    ct0 = get_x_ct0()
-
-    if not auth_token or not ct0:
-        logger.warning("X_AUTH_TOKEN or X_CT0 not set in environment")
-        return []
-
-    tweets: list[XTweet] = []
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
-
-        # Set cookies
-        await context.add_cookies([
-            {"name": "auth_token", "value": auth_token, "domain": ".x.com", "path": "/"},
-            {"name": "ct0", "value": ct0, "domain": ".x.com", "path": "/"},
-        ])
-
-        page = await context.new_page()
-
-        # Intercept API responses to capture tweet data
-        captured_responses = []
-
-        async def handle_response(response):
-            url = response.url
-            if "SearchTimeline" in url or "Search" in url:
-                try:
-                    body = await response.json()
-                    captured_responses.append(body)
-                except Exception:
-                    pass
-
-        page.on("response", handle_response)
-
-        # Navigate to search
-        search_url = f"https://x.com/search?q={urllib.parse.quote(query)}&src=typed_query&f=live"
-        logger.info("Playwright navigating to: %s", search_url[:80])
-
-        try:
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_timeout(5000)
-
-            # Scroll down to load more tweets
-            for _ in range(3):
-                await page.evaluate("window.scrollBy(0, 1000)")
-                await page.wait_for_timeout(2000)
-
-        except Exception as e:
-            logger.warning("Playwright navigation failed: %s", e)
-            await browser.close()
-            return []
-
-        # Parse captured API responses
-        for resp_data in captured_responses:
-            _extract_tweets_from_response(resp_data, tweets, hours_back)
-
-        # If no API responses captured, try DOM scraping as fallback
-        if not tweets:
-            logger.info("No API responses captured, trying DOM extraction")
-            tweets = await _extract_from_dom(page, hours_back)
-
-        await browser.close()
-
-    return tweets
-
-
 def _extract_tweets_from_response(data: dict, tweets: list[XTweet], hours_back: int):
     """Extract tweets from X API JSON response."""
     cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
@@ -362,37 +289,114 @@ async def search_fire_tweets(
 
     1. Search #IF hashtag (primary signal for fire reports)
     2. Search official emergency accounts (from:handle) in batches
+
+    Uses a single browser instance for all queries to minimize memory.
     """
+    from playwright.async_api import async_playwright
+
+    auth_token = get_x_auth_token()
+    ct0 = get_x_ct0()
+
+    if not auth_token or not ct0:
+        logger.warning("X_AUTH_TOKEN or X_CT0 not set in environment")
+        return []
+
     all_tweets: dict[str, XTweet] = {}
 
-    # 1. #IF hashtag search
-    try:
-        logger.info("Searching X: '#IF'")
-        tweets = await _search_x_com("#IF", hours_back=hours_back)
-        for tweet in tweets[:limit_per_query]:
-            if tweet.tweet_id not in all_tweets:
-                all_tweets[tweet.tweet_id] = tweet
-    except Exception as e:
-        logger.warning("Search for #IF failed: %s", e)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-extensions',
+                '--disable-background-networking',
+                '--single-process',
+            ],
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720},
+        )
 
-    # 2. Official accounts — batched with OR
-    handles = OFFICIAL_ACCOUNTS
-    for i in range(0, len(handles), 6):
-        batch = handles[i:i+6]
-        query = " OR ".join(f"from:{h}" for h in batch)
+        # Set cookies
+        await context.add_cookies([
+            {"name": "auth_token", "value": auth_token, "domain": ".x.com", "path": "/"},
+            {"name": "ct0", "value": ct0, "domain": ".x.com", "path": "/"},
+        ])
+
+        page = await context.new_page()
+
         try:
-            logger.info("Searching X: '%s'", query[:80])
-            tweets = await _search_x_com(query, hours_back=hours_back)
-            for tweet in tweets[:10]:
+            # 1. #IF hashtag search
+            tweets = await _search_x_com_page(page, "#IF", hours_back=hours_back)
+            for tweet in tweets[:limit_per_query]:
                 if tweet.tweet_id not in all_tweets:
                     all_tweets[tweet.tweet_id] = tweet
-        except Exception as e:
-            logger.warning("Official accounts batch failed: %s", e)
-            continue
+
+            # 2. Official accounts — batched with OR
+            handles = OFFICIAL_ACCOUNTS
+            for i in range(0, len(handles), 6):
+                batch = handles[i:i+6]
+                query = " OR ".join(f"from:{h}" for h in batch)
+                tweets = await _search_x_com_page(page, query, hours_back=hours_back)
+                for tweet in tweets[:10]:
+                    if tweet.tweet_id not in all_tweets:
+                        all_tweets[tweet.tweet_id] = tweet
+        finally:
+            await browser.close()
 
     result = list(all_tweets.values())
     logger.info("Found %d unique fire tweets", len(result))
     return result
+
+
+async def _search_x_com_page(page, query: str, hours_back: int = 2) -> list[XTweet]:
+    """Search X.com on an existing page instance."""
+    tweets: list[XTweet] = []
+    captured_responses = []
+
+    async def handle_response(response):
+        url = response.url
+        if "SearchTimeline" in url or "Search" in url:
+            try:
+                body = await response.json()
+                captured_responses.append(body)
+            except Exception:
+                pass
+
+    page.on("response", handle_response)
+
+    search_url = f"https://x.com/search?q={urllib.parse.quote(query)}&src=typed_query&f=live"
+    logger.info("Searching X: '%s'", query[:80])
+
+    try:
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+        await page.wait_for_timeout(5000)
+
+        # Scroll to load more
+        for _ in range(2):
+            await page.evaluate("window.scrollBy(0, 800)")
+            await page.wait_for_timeout(1500)
+
+    except Exception as e:
+        logger.warning("Navigation failed: %s", e)
+        return tweets
+
+    # Parse captured API responses
+    cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
+    for resp_data in captured_responses:
+        _extract_tweets_from_response(resp_data, tweets, hours_back)
+
+    # DOM fallback
+    if not tweets:
+        tweets = await _extract_from_dom(page, hours_back)
+
+    # Remove listener for next search
+    page.remove_listener("response", handle_response)
+
+    return tweets
 
 
 def search_fire_tweets_sync(
