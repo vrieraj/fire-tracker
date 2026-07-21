@@ -16,7 +16,7 @@ dependencies = [
     "pyproj>=3.6",
     "pandas>=2.0",
     "python-dotenv>=1.0",
-    "twscrape>=0.18",
+    "playwright>=1.40",
     "psycopg2-binary>=2.9",
 ]
 

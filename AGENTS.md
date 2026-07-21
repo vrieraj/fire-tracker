@@ -23,7 +23,7 @@ pip install -e .
 | `src/fire_tracker/wx_stations.py` | WU PWS station discovery (tile API) + hourly history download |
 | `src/fire_tracker/metar.py` | METAR station observations from aviationweather.gov (NOAA) |
 | `src/fire_tracker/frp.py` | LSA SAF FRP-PIXEL data fetcher (MTG satellite fire detections) |
-| `src/fire_tracker/xmonitor.py` | X.com fire mention scraper using twscrape (GraphQL API, cookies auth) |
+| `src/fire_tracker/xmonitor.py` | X.com fire mention scraper using Playwright (headless Chromium, cookies auth) |
 | `src/fire_tracker/xgrok.py` | Grok chat client via X.com reverse-engineered API (AI-assisted fire queries) |
 | `src/fire_tracker/frp_locator.py` | FRP-based fire locator (geocode → FRP bbox search → centroid) |
 | `src/fire_tracker/monitor.py` | Fire monitor orchestrator (X #IF search + Grok queries → FRP cross-ref → DB) |
@@ -173,7 +173,7 @@ Satellite fire detection data from LSA SAF (IPMA/LSA SAF).
 - `pyproj` — UTM→WGS84 conversion (INCyL only)
 - `flask` — REST API
 - `pandas` — Data processing
-- `twscrape` — X.com GraphQL API scraper (cookies auth)
+- `playwright` — X.com scraping (headless Chromium, cookies auth)
 - `psycopg2-binary` — PostgreSQL adapter (Supabase)
 
 **Removed** (no longer needed):

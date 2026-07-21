@@ -32,7 +32,7 @@ requests==2.34.2
 ruff==0.15.22
 six==1.17.0
 soupsieve==2.8.4
-twscrape==0.19.1
+playwright==1.61.0
 typing_extensions==4.16.0
 urllib3==2.7.0
 Werkzeug==3.1.8

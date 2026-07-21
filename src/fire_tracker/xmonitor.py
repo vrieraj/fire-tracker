@@ -1,5 +1,5 @@
 """
-X.com fire mention monitor using twscrape.
+X.com fire mention monitor using Playwright.
 
 Searches for #IF hashtags and official emergency account posts
 to detect wildfires in Spanish regions without official scrapers.
@@ -14,16 +14,15 @@ Setup:
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-from twscrape import API, gather
 
 logger = logging.getLogger(__name__)
 
@@ -33,42 +32,29 @@ from dotenv import load_dotenv
 load_dotenv(_root / '.env')
 
 # Only #IF hashtag — the standard for fire reports in Spain
-SEARCH_QUERIES = {
-    "es": ["#IF"],
-}
+SEARCH_QUERIES = ["#IF"]
 
 # Official fire/emergency accounts — only regions WITHOUT scrapers
-# Andalucía(INFOCA), Cataluña(incendiscat), CyL(INCyL), CLM(FIDIAS+FRP) have scrapers
-OFFICIAL_ACCOUNTS = {
-    "es": [
-        # Aragón
-        "112Arago",
-        "IIFFAragon",
-        # Madrid
-        "112cmadrid",
-        "bomberos_infoma",
-        "AT_Brif",
-        "BBFFMadrid",
-        # Comunidad Valenciana
-        "emergenciascv",
-        # País Vasco + Navarra + La Rioja (agrupadas — pocas)
-        "112euskadi",
-        "112_na",
-        "BBFFLaRioja",
-        "MAmbienteRioja",
-        # Extremadura
-        "PLANINFOEX",
-        "JuntaEx112",
-        # Cantabria
-        "112CantabriaV2",
-        # Asturias
-        "112asturias",
-        # Baleares
-        "Emergencies_112",
-        # Murcia
-        "112Murcia",
-    ],
-}
+OFFICIAL_ACCOUNTS = [
+    # Aragón
+    "112Arago", "IIFFAragon",
+    # Madrid
+    "112cmadrid", "bomberos_infoma", "AT_Brif", "BBFFMadrid",
+    # Comunidad Valenciana
+    "emergenciascv",
+    # País Vasco + Navarra + La Rioja
+    "112euskadi", "112_na", "BBFFLaRioja", "MAmbienteRioja",
+    # Extremadura
+    "PLANINFOEX", "JuntaEx112",
+    # Cantabria
+    "112CantabriaV2",
+    # Asturias
+    "112asturias",
+    # Baleares
+    "Emergencies_112",
+    # Murcia
+    "112Murcia",
+]
 
 
 @dataclass
@@ -85,7 +71,6 @@ class XTweet:
     language: str = ""
     urls: list[str] = field(default_factory=list)
     location_mention: str = ""
-    raw: Any = None
 
 
 def get_x_auth_token() -> str | None:
@@ -96,45 +81,8 @@ def get_x_ct0() -> str | None:
     return os.environ.get("X_CT0")
 
 
-def _build_api() -> API | None:
-    """Build twscrape API with cookies from environment."""
-    auth_token = get_x_auth_token()
-    ct0 = get_x_ct0()
-
-    if not auth_token or not ct0:
-        logger.warning("X_AUTH_TOKEN or X_CT0 not set in environment")
-        return None
-
-    db_path = Path(__file__).resolve().parents[2] / "data" / "xmonitor_accounts.db"
-    api = API(str(db_path))
-    return api
-
-
-async def _add_cookies(api: API) -> bool:
-    """Add cookies to the API pool."""
-    auth_token = get_x_auth_token()
-    ct0 = get_x_ct0()
-
-    if not auth_token or not ct0:
-        return False
-
-    cookies_str = f"auth_token={auth_token}; ct0={ct0}"
-    try:
-        await api.pool.add_account_cookies("fire_monitor", cookies_str)
-        return True
-    except Exception as e:
-        logger.error("Failed to add cookies: %s", e)
-        return False
-
-
 def extract_if_municipality(text: str) -> str:
-    """Extract municipality name from #IF hashtag.
-
-    The #IF{Municipio} format is the standard way to report active wildfires
-    on Spanish Twitter/X. Examples: #IFJaen, #IFCordoba, #IFVillanuevaDelRosario
-
-    Returns the municipality name normalized.
-    """
+    """Extract municipality name from #IF hashtag."""
     match = re.search(r'#IF([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]*)', text)
     if match:
         municipality = match.group(1)
@@ -166,41 +114,242 @@ def _extract_location(text: str) -> str:
     if match:
         return match.group(1)
 
-    match = re.search(r'provincia\s+de\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})', text)
-    if match:
-        return match.group(1)
-
     return ""
 
 
-def _parse_tweet(tweet: Any) -> XTweet:
-    """Parse a twscrape Tweet object into XTweet."""
-    created = tweet.date
-    if created and not created.tzinfo:
-        created = created.replace(tzinfo=timezone.utc)
+def _parse_tweet_from_json(data: dict) -> XTweet | None:
+    """Parse a tweet dict from X API response into XTweet."""
+    try:
+        tweet_id = str(data.get("rest_id", ""))
+        if not tweet_id:
+            return None
 
-    urls = []
-    if hasattr(tweet, 'urls') and tweet.urls:
-        for u in tweet.urls:
-            if hasattr(u, 'url'):
-                urls.append(u.url)
-            elif isinstance(u, str):
-                urls.append(u)
+        core = data.get("core", {}).get("user_results", {}).get("result", {})
+        legacy = data.get("legacy", {})
+        created_at_str = legacy.get("created_at", "")
 
-    return XTweet(
-        tweet_id=str(tweet.id),
-        text=tweet.rawContent or "",
-        author_handle=tweet.user.username if tweet.user else "",
-        author_name=tweet.user.displayname if tweet.user else "",
-        created_at=created or datetime.now(timezone.utc),
-        likes=getattr(tweet, 'likeCount', 0) or 0,
-        retweets=getattr(tweet, 'retweetCount', 0) or 0,
-        replies=getattr(tweet, 'replyCount', 0) or 0,
-        language=getattr(tweet, 'lang', '') or "",
-        urls=urls,
-        location_mention=_extract_location(tweet.rawContent or ""),
-        raw=tweet,
-    )
+        created_at = datetime.now(timezone.utc)
+        if created_at_str:
+            try:
+                created_at = datetime.strptime(
+                    created_at_str, "%a %b %d %H:%M:%S %z %Y"
+                )
+            except ValueError:
+                pass
+
+        text = legacy.get("full_text", "")
+        author_handle = core.get("legacy", {}).get("screen_name", "")
+        author_name = core.get("legacy", {}).get("name", "")
+
+        urls = []
+        for u in legacy.get("entities", {}).get("urls", []):
+            url = u.get("expanded_url") or u.get("url", "")
+            if url:
+                urls.append(url)
+
+        return XTweet(
+            tweet_id=tweet_id,
+            text=text,
+            author_handle=author_handle,
+            author_name=author_name,
+            created_at=created_at,
+            likes=legacy.get("favorite_count", 0),
+            retweets=legacy.get("retweet_count", 0),
+            replies=legacy.get("reply_count", 0),
+            language=legacy.get("lang", ""),
+            urls=urls,
+            location_mention=_extract_location(text),
+        )
+    except Exception as e:
+        logger.debug("Failed to parse tweet: %s", e)
+        return None
+
+
+async def _search_x_com(query: str, hours_back: int = 2) -> list[XTweet]:
+    """Search X.com using Playwright with cookie authentication."""
+    from playwright.async_api import async_playwright
+
+    auth_token = get_x_auth_token()
+    ct0 = get_x_ct0()
+
+    if not auth_token or not ct0:
+        logger.warning("X_AUTH_TOKEN or X_CT0 not set in environment")
+        return []
+
+    tweets: list[XTweet] = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+
+        # Set cookies
+        await context.add_cookies([
+            {"name": "auth_token", "value": auth_token, "domain": ".x.com", "path": "/"},
+            {"name": "ct0", "value": ct0, "domain": ".x.com", "path": "/"},
+        ])
+
+        page = await context.new_page()
+
+        # Intercept API responses to capture tweet data
+        captured_responses = []
+
+        async def handle_response(response):
+            url = response.url
+            if "SearchTimeline" in url or "Search" in url:
+                try:
+                    body = await response.json()
+                    captured_responses.append(body)
+                except Exception:
+                    pass
+
+        page.on("response", handle_response)
+
+        # Navigate to search
+        search_url = f"https://x.com/search?q={urllib.parse.quote(query)}&src=typed_query&f=live"
+        logger.info("Playwright navigating to: %s", search_url[:80])
+
+        try:
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(5000)
+
+            # Scroll down to load more tweets
+            for _ in range(3):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await page.wait_for_timeout(2000)
+
+        except Exception as e:
+            logger.warning("Playwright navigation failed: %s", e)
+            await browser.close()
+            return []
+
+        # Parse captured API responses
+        for resp_data in captured_responses:
+            _extract_tweets_from_response(resp_data, tweets, hours_back)
+
+        # If no API responses captured, try DOM scraping as fallback
+        if not tweets:
+            logger.info("No API responses captured, trying DOM extraction")
+            tweets = await _extract_from_dom(page, hours_back)
+
+        await browser.close()
+
+    return tweets
+
+
+def _extract_tweets_from_response(data: dict, tweets: list[XTweet], hours_back: int):
+    """Extract tweets from X API JSON response."""
+    cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
+
+    try:
+        instructions = (
+            data.get("data", {})
+            .get("search_by_raw_query", {})
+            .get("search_timeline", {})
+            .get("timeline", {})
+            .get("instructions", [])
+        )
+
+        for instruction in instructions:
+            entries = instruction.get("entries", [])
+            for entry in entries:
+                content = entry.get("content", {})
+                item_content = content.get("itemContent", {})
+                tweet_results = item_content.get("tweet_results", {})
+                result = tweet_results.get("result", {})
+
+                if result.get("__typename") == "Tweet":
+                    parsed = _parse_tweet_from_json(result)
+                    if parsed and parsed.created_at.timestamp() >= cutoff:
+                        if not any(t.tweet_id == parsed.tweet_id for t in tweets):
+                            tweets.append(parsed)
+                elif result.get("__typename") == "TimelineTimelineItem":
+                    inner = result.get("content", {}).get("tweetResult", {}).get("result", {})
+                    parsed = _parse_tweet_from_json(inner)
+                    if parsed and parsed.created_at.timestamp() >= cutoff:
+                        if not any(t.tweet_id == parsed.tweet_id for t in tweets):
+                            tweets.append(parsed)
+    except Exception as e:
+        logger.debug("Error extracting tweets from response: %s", e)
+
+
+async def _extract_from_dom(page, hours_back: int) -> list[XTweet]:
+    """Fallback: extract tweets directly from DOM elements."""
+    tweets = []
+
+    try:
+        # Wait for tweet articles to appear
+        await page.wait_for_selector('article[data-testid="tweet"]', timeout=10000)
+    except Exception:
+        logger.info("No tweet articles found in DOM")
+        return tweets
+
+    try:
+        tweet_elements = await page.query_selector_all('article[data-testid="tweet"]')
+        logger.info("Found %d tweet elements in DOM", len(tweet_elements))
+
+        for elem in tweet_elements[:30]:
+            try:
+                # Extract tweet text
+                text_elem = await elem.query_selector('[data-testid="tweetText"]')
+                text = await text_elem.inner_text() if text_elem else ""
+
+                # Extract author handle
+                handle_elem = await elem.query_selector('a[href*="/"] div[dir="ltr"] span')
+                author_handle = ""
+                if handle_elem:
+                    handle_text = await handle_elem.inner_text()
+                    if handle_text.startswith("@"):
+                        author_handle = handle_text[1:]
+
+                # Extract tweet ID from time link
+                time_elem = await elem.query_selector('time')
+                tweet_id = ""
+                created_at = datetime.now(timezone.utc)
+                if time_elem:
+                    datetime_str = await time_elem.get_attribute("datetime")
+                    parent_link = await time_elem.evaluate(
+                        "el => el.closest('a')?.href || ''"
+                    )
+                    if parent_link:
+                        match = re.search(r'/status/(\d+)', parent_link)
+                        if match:
+                            tweet_id = match.group(1)
+                    if datetime_str:
+                        try:
+                            created_at = datetime.fromisoformat(
+                                datetime_str.replace("Z", "+00:00")
+                            )
+                        except ValueError:
+                            pass
+
+                if not tweet_id or not text:
+                    continue
+
+                # Filter by time
+                cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
+                if created_at.timestamp() < cutoff:
+                    continue
+
+                parsed = XTweet(
+                    tweet_id=tweet_id,
+                    text=text,
+                    author_handle=author_handle,
+                    author_name="",
+                    created_at=created_at,
+                    location_mention=_extract_location(text),
+                )
+                tweets.append(parsed)
+
+            except Exception as e:
+                logger.debug("Error parsing DOM tweet element: %s", e)
+                continue
+
+    except Exception as e:
+        logger.warning("DOM extraction failed: %s", e)
+
+    return tweets
 
 
 async def search_fire_tweets(
@@ -213,46 +362,30 @@ async def search_fire_tweets(
 
     1. Search #IF hashtag (primary signal for fire reports)
     2. Search official emergency accounts (from:handle) in batches
-
-    Total: ~4 API calls (manageable with 1 twscrape account per hour).
     """
-    api = _build_api()
-    if not api:
-        return []
-
-    if not await _add_cookies(api):
-        return []
-
     all_tweets: dict[str, XTweet] = {}
-    cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
 
-    # 1. #IF hashtag search (1 API call)
+    # 1. #IF hashtag search
     try:
         logger.info("Searching X: '#IF'")
-        tweets = await gather(api.search("#IF", limit=limit_per_query))
-        for tweet in tweets:
-            parsed = _parse_tweet(tweet)
-            if parsed.created_at.timestamp() < cutoff:
-                continue
-            if parsed.tweet_id not in all_tweets:
-                all_tweets[parsed.tweet_id] = parsed
+        tweets = await _search_x_com("#IF", hours_back=hours_back)
+        for tweet in tweets[:limit_per_query]:
+            if tweet.tweet_id not in all_tweets:
+                all_tweets[tweet.tweet_id] = tweet
     except Exception as e:
         logger.warning("Search for #IF failed: %s", e)
 
-    # 2. Official accounts — batched with OR (3 API calls for 17 accounts)
-    handles = OFFICIAL_ACCOUNTS.get("es", [])
+    # 2. Official accounts — batched with OR
+    handles = OFFICIAL_ACCOUNTS
     for i in range(0, len(handles), 6):
         batch = handles[i:i+6]
         query = " OR ".join(f"from:{h}" for h in batch)
         try:
             logger.info("Searching X: '%s'", query[:80])
-            tweets = await gather(api.search(query, limit=10))
-            for tweet in tweets:
-                parsed = _parse_tweet(tweet)
-                if parsed.created_at.timestamp() < cutoff:
-                    continue
-                if parsed.tweet_id not in all_tweets:
-                    all_tweets[parsed.tweet_id] = parsed
+            tweets = await _search_x_com(query, hours_back=hours_back)
+            for tweet in tweets[:10]:
+                if tweet.tweet_id not in all_tweets:
+                    all_tweets[tweet.tweet_id] = tweet
         except Exception as e:
             logger.warning("Official accounts batch failed: %s", e)
             continue
@@ -268,6 +401,7 @@ def search_fire_tweets_sync(
     hours_back: int = 2,
 ) -> list[XTweet]:
     """Synchronous wrapper for search_fire_tweets."""
+    import asyncio
     return asyncio.run(search_fire_tweets(
         limit_per_query=limit_per_query,
         hours_back=hours_back,
