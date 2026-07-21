@@ -205,16 +205,6 @@ def _mount_api_routes(app: FastAPI) -> None:
             logger.warning('Meteogram error: %s', e)
             return JSONResponse({'error': str(e)}, status_code=500)
 
-    @app.get('/map')
-    def map_page():
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse(content=_build_map_html())
-
-    @app.get('/')
-    def root_redirect():
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url='/map')
-
 
 # ── Head HTML (Leaflet CDN) ──────────────────────────────────────────────────
 
@@ -429,8 +419,7 @@ form {
 
 # ── JavaScript ───────────────────────────────────────────────────────────────
 
-JS_CODE = """
-(() => {
+JS_BODY = r"""
   let firesData = {features: []};
   let frpData = {features: []};
   let fireMarkers = {};
@@ -439,7 +428,7 @@ JS_CODE = """
   let searchTimeout = null;
   let mapReady = false;
 
-  function _initApp() {
+  function initApp() {
     if (mapReady) return;
     mapReady = true;
 
@@ -823,43 +812,31 @@ JS_CODE = """
       if (btn) { btn.textContent = 'Actualizar datos'; btn.disabled = false; }
     };
   }
-
-  // Expose globally for inline bootstrap script
-  window.initApp = _initApp;
-})();
 """
 
+# For FastAPI + Docker (IIFE that exposes window.initApp)
+JS_CODE = "(() => {\n" + JS_BODY + "\n  window.initApp = initApp;\n})();\n"
 
-# ── HTML templates ───────────────────────────────────────────────────────────
+# For Gradio js_on_load (embedded in component callback)
+JS_ONLOAD = "(function(element) {\n" + JS_BODY + r"""
 
-JS_ONLOAD = """
-(function(element) {
-  function ldCSS(url) {
-    if (!document.querySelector('link[href="' + url + '"]')) {
-      var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = url; l.crossOrigin = '';
-      document.head.appendChild(l);
+  // Expose update functions for Gradio .then() callbacks
+  // (they'll be called by demo.load().then(js=...))
+
+  // Poll for fire-map + Leaflet
+  var tries = 0;
+  var iv = setInterval(function() {
+    tries++;
+    var mapEl = document.getElementById('fire-map');
+    if (mapEl && window.L) {
+      clearInterval(iv);
+      initApp();
     }
-  }
-  function ldJS(url) {
-    return new Promise(function(ok, fail) {
-      if (document.querySelector('script[src="' + url + '"]')) { ok(); return; }
-      var s = document.createElement('script'); s.src = url; s.crossOrigin = '';
-      s.onload = ok; s.onerror = fail; document.head.appendChild(s);
-    });
-  }
-  ldCSS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
-  ldJS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js').then(function() {
-    var tries = 0;
-    var iv = setInterval(function() {
-      tries++;
-      if (typeof window.initApp === 'function' && document.getElementById('fire-map')) {
-        clearInterval(iv); window.initApp();
-      }
-      if (tries > 200) clearInterval(iv);
-    }, 50);
-  });
+    if (tries > 200) clearInterval(iv);
+  }, 50);
 })(element);
 """
+
 
 MAP_HTML = """
 <div id="fire-app">
@@ -890,11 +867,8 @@ MAP_HTML = """
 
 # ── Gradio + FastAPI app ─────────────────────────────────────────────────────
 
-def build_app() -> FastAPI:
-    app = FastAPI(title='Fire Tracker')
-    _mount_api_routes(app)
-
-    theme = gr.themes.Base(
+def _build_theme():
+    return gr.themes.Base(
         primary_hue='slate',
         neutral_hue='slate',
         font=['system-ui', 'sans-serif'],
@@ -918,18 +892,39 @@ def build_app() -> FastAPI:
         slider_color='#6b8cce',
     )
 
-    with gr.Blocks(title='Fire Tracker') as demo:
+
+def build_demo() -> gr.Blocks:
+    theme = _build_theme()
+    with gr.Blocks(title='Fire Tracker', theme=theme, fill_height=True, fill_width=True) as demo:
         fires_output = gr.Textbox(visible=False)
         frp_output = gr.Textbox(visible=False)
 
-        gr.HTML(MAP_HTML, elem_id='fire-tracker-map', js_on_load=JS_ONLOAD)
+        gr.HTML(MAP_HTML, elem_id='fire-tracker-map',
+                css_template=CSS,
+                head='<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">'
+                     '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>',
+                js_on_load=JS_ONLOAD)
 
         demo.load(fn=_get_fires_json, outputs=[fires_output]).then(
             fn=None, js="(json) => { if (window._updateFires) window._updateFires(json); }", inputs=[fires_output])
         demo.load(fn=_get_frp_json, outputs=[frp_output]).then(
             fn=None, js="(json) => { if (window._updateFRP) window._updateFRP(json); }", inputs=[frp_output])
 
-    gr.mount_gradio_app(app, demo, path='/gradio', theme=theme, css=CSS, js=JS_CODE, head=HEAD_HTML)
+    return demo
+
+
+def build_app() -> FastAPI:
+    app = FastAPI(title='Fire Tracker')
+    _mount_api_routes(app)
+
+    @app.get('/map')
+    def map_page():
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=_build_map_html())
+
+    demo = build_demo()
+    gr.mount_gradio_app(app, demo, path='/')
+
     return app
 
 
