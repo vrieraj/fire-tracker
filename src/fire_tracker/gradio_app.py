@@ -205,8 +205,55 @@ def _mount_api_routes(app: FastAPI) -> None:
             logger.warning('Meteogram error: %s', e)
             return JSONResponse({'error': str(e)}, status_code=500)
 
+    @app.get('/map')
+    def map_page():
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=_build_map_html())
+
 
 # ── Head HTML (Leaflet CDN) ──────────────────────────────────────────────────
+
+def _build_map_html() -> str:
+    """Build standalone HTML page for the fire map (no Gradio dependency)."""
+    # Strip IIFE wrapper from JS_CODE to get the raw functions
+    js = JS_CODE
+    # Remove the (() => { and })(); wrapper
+    js = js.replace('(() => {\n', '').rstrip()
+    if js.endswith('})();'):
+        js = js[:-5]
+    # Make _initApp the entry point
+    js = js.replace('function _initApp() {', 'function initApp() {')
+    js = js.replace('window.initApp = _initApp;', '')
+
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fire Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<style>
+{CSS}
+</style>
+</head>
+<body>
+{MAP_HTML}
+<script>
+{js}
+
+// Auto-init when DOM ready
+if (document.readyState === 'loading') {{
+  document.addEventListener('DOMContentLoaded', function() {{
+    if (document.getElementById('fire-map') && window.L) initApp();
+  }});
+}} else {{
+  if (document.getElementById('fire-map') && window.L) initApp();
+}}
+</script>
+</body>
+</html>"""
+
 
 HEAD_HTML = """
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -230,26 +277,33 @@ CSS = """
     --radius: 8px;
 }
 
-/* ── Gradio 6 full-viewport override ── */
-gradio-app { display: block !important; padding: 0 !important; margin: 0 !important; }
-gradio-app > div { padding: 0 !important; margin: 0 !important; }
-
-/* Hide Gradio chrome */
-.gradio-container, footer, .gr-header, .gr-topbar, .prose { display: none !important; }
-
-/* Strip padding from every Gradio wrapper around gr.HTML */
-.gradio-html, .gr-html, .gr-block, .gr-group,
-.gradio-html > div, .gr-html > div, .gr-block > div, .gr-group > div,
-.gradio-container form, .gradio-container > div {
-    padding: 0 !important; margin: 0 !important; border: none !important;
-    background: transparent !important; min-height: 0 !important; overflow: visible !important;
+/* ── Full-viewport Gradio override ── */
+html, body, gradio-app, gradio-app > div {
+    margin: 0 !important; padding: 0 !important;
+    height: 100vh !important; width: 100vw !important;
+    overflow: hidden !important;
+    background: var(--bg) !important;
 }
 
-/* Force full viewport on body and html */
-html, body {
-    margin: 0 !important; padding: 0 !important;
-    height: 100vh !important; overflow: hidden !important;
-    background: var(--bg) !important;
+/* Make Gradio container fill viewport and be transparent */
+.gradio-container {
+    max-width: none !important;
+    width: 100vw !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+/* Hide Gradio chrome but NOT the container */
+footer, .gr-header, .gr-topbar, .prose, .container { display: none !important; }
+
+/* Strip padding from Gradio wrappers around gr.HTML */
+.gradio-html, .gr-html, .gr-block, .gr-group,
+.gradio-html > div, .gr-html > div, .gr-block > div, .gr-group > div,
+form {
+    padding: 0 !important; margin: 0 !important; border: none !important;
+    background: transparent !important; min-height: 0 !important; overflow: visible !important;
 }
 
 /* ── Main layout ── */
@@ -380,7 +434,7 @@ JS_CODE = """
   let searchTimeout = null;
   let mapReady = false;
 
-  function initApp() {
+  function _initApp() {
     if (mapReady) return;
     mapReady = true;
 
@@ -765,22 +819,42 @@ JS_CODE = """
     };
   }
 
-  // Wait for DOM and Leaflet to be ready
-  function checkReady() {
-    var mapEl = document.getElementById('fire-map');
-    if (mapEl && window.L) { initApp(); return; }
-    setTimeout(checkReady, 100);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', checkReady);
-  } else {
-    checkReady();
-  }
+  // Expose globally for inline bootstrap script
+  window.initApp = _initApp;
 })();
 """
 
 
 # ── HTML templates ───────────────────────────────────────────────────────────
+
+JS_ONLOAD = """
+(function(element) {
+  function ldCSS(url) {
+    if (!document.querySelector('link[href="' + url + '"]')) {
+      var l = document.createElement('link'); l.rel = 'stylesheet'; l.href = url; l.crossOrigin = '';
+      document.head.appendChild(l);
+    }
+  }
+  function ldJS(url) {
+    return new Promise(function(ok, fail) {
+      if (document.querySelector('script[src="' + url + '"]')) { ok(); return; }
+      var s = document.createElement('script'); s.src = url; s.crossOrigin = '';
+      s.onload = ok; s.onerror = fail; document.head.appendChild(s);
+    });
+  }
+  ldCSS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css');
+  ldJS('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js').then(function() {
+    var tries = 0;
+    var iv = setInterval(function() {
+      tries++;
+      if (typeof window.initApp === 'function' && document.getElementById('fire-map')) {
+        clearInterval(iv); window.initApp();
+      }
+      if (tries > 200) clearInterval(iv);
+    }, 50);
+  });
+})(element);
+"""
 
 MAP_HTML = """
 <div id="fire-app">
@@ -843,7 +917,7 @@ def build_app() -> FastAPI:
         fires_output = gr.Textbox(visible=False)
         frp_output = gr.Textbox(visible=False)
 
-        gr.HTML(MAP_HTML)
+        gr.HTML(MAP_HTML, elem_id='fire-tracker-map', js_on_load=JS_ONLOAD)
 
         demo.load(fn=_get_fires_json, outputs=[fires_output]).then(
             fn=None, js="(json) => { if (window._updateFires) window._updateFires(json); }", inputs=[fires_output])
