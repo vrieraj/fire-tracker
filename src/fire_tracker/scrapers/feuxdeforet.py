@@ -24,6 +24,8 @@ _STATUS_MAP = {
     'non_confirme': 'active',
 }
 
+_TITLE_RE = re.compile(r'Incendie[s]?\s+[àa]\s+([^(]+?)\s*\((\w+)\)')
+_URL_DEPT_RE = re.compile(r'feuxdeforet\.fr/([a-z-]+-\d+)/')
 _DETAIL_SCRAPE_DELAY = 0.3
 
 
@@ -68,12 +70,27 @@ class FeuxDeForetFrScraper(FireScraper):
             except (TypeError, IndexError, ValueError):
                 continue
 
-            raw_etat = props.get('etat', props.get('statut', ''))
+            raw_etat = props.get('etat')
+            if not raw_etat:
+                continue
             status = _STATUS_MAP.get(raw_etat,
                                      self._status_normalize(raw_etat, self.source))
 
             fire_id = str(props.get('id', ''))
             detail_url = props.get('url')
+
+            municipality = None
+            province = None
+            title = props.get('title') or props.get('titre', '')
+            tm = _TITLE_RE.search(title)
+            if tm:
+                municipality = tm.group(1).strip()
+                province = tm.group(2)
+
+            if not province and detail_url:
+                um = _URL_DEPT_RE.search(detail_url)
+                if um:
+                    province = um.group(1).split('-')[-1]
 
             incidents.append(FireIncident(
                 source=self.source,
@@ -81,8 +98,8 @@ class FeuxDeForetFrScraper(FireScraper):
                 source_url=detail_url,
                 latitude=lat,
                 longitude=lon,
-                municipality=None,
-                province=None,
+                municipality=municipality,
+                province=province,
                 region=None,
                 country='FR',
                 status=status,
