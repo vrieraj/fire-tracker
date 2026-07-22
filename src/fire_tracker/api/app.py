@@ -405,5 +405,33 @@ def cron_stations():
     return jsonify({"status": "ok", "message": "station cache cleanup (no-op)"})
 
 
+@app.route('/api/cron/frp', methods=['POST'])
+def cron_frp():
+    from fire_tracker.frp import fetch_frp
+    data = fetch_frp()
+    features = data.get('features', [])
+    if features:
+        db_rows = []
+        for f in features:
+            p = f['properties']
+            db_rows.append({
+                'longitude': f['geometry']['coordinates'][0],
+                'latitude': f['geometry']['coordinates'][1],
+                'frp_mw': p['frp_mw'],
+                'confidence': p['confidence'],
+                'frp_uncertainty': p['frp_uncertainty'],
+                'pixel_size_km2': p['pixel_size_km2'],
+                'acquisition_time': p['acquisition_time'],
+                'bt_mir': p['bt_mir'],
+                'bt_tir': p['bt_tir'],
+            })
+        _db.insert_frp_detections(db_rows)
+    return jsonify({
+        'status': 'ok',
+        'detections_fetched': len(features),
+        'detections_in_db': _db.count_frp_detections(hours=24),
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
