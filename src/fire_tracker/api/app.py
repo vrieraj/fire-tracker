@@ -408,27 +408,57 @@ def cron_stations():
 @app.route('/api/cron/frp', methods=['POST'])
 def cron_frp():
     from fire_tracker.frp import fetch_frp
-    data = fetch_frp()
-    features = data.get('features', [])
-    if features:
-        db_rows = []
-        for f in features:
-            p = f['properties']
-            db_rows.append({
-                'longitude': f['geometry']['coordinates'][0],
-                'latitude': f['geometry']['coordinates'][1],
-                'frp_mw': p['frp_mw'],
-                'confidence': p['confidence'],
-                'frp_uncertainty': p['frp_uncertainty'],
-                'pixel_size_km2': p['pixel_size_km2'],
-                'acquisition_time': p['acquisition_time'],
-                'bt_mir': p['bt_mir'],
-                'bt_tir': p['bt_tir'],
-            })
+    from fire_tracker.frp import _list_csv_urls, _download_csv, _parse_csv, _get_age_color, _BBOX
+    from datetime import datetime, timezone, timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import base64, os
+
+    now = datetime.now(timezone.utc)
+    user = os.environ.get('LSA_SAF_USER', '')
+    passwd = os.environ.get('LSA_SAF_PASS', '')
+    auth = base64.b64encode(f'{user}:{passwd}'.encode()).decode() if user else None
+
+    all_urls = []
+    for h in range(25):
+        d = now - timedelta(hours=h)
+        all_urls.extend(_list_csv_urls(d))
+
+    sampled = all_urls[::6][:12]
+
+    seen = set()
+    detections = []
+
+    def fetch_one(url):
+        csv_text = _download_csv(url)
+        if csv_text:
+            return _parse_csv(csv_text)
+        return []
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {ex.submit(fetch_one, u): u for u in sampled}
+        for f in as_completed(futures, timeout=60):
+            try:
+                for d in f.result(timeout=5):
+                    key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
+                    if key not in seen:
+                        seen.add(key)
+                        detections.append(d)
+            except Exception:
+                pass
+
+    if detections:
+        db_rows = [{
+            'longitude': d.longitude, 'latitude': d.latitude,
+            'frp_mw': d.frp_mw, 'confidence': d.confidence,
+            'frp_uncertainty': d.frp_uncertainty, 'pixel_size_km2': d.pixel_size_km2,
+            'acquisition_time': d.acquisition_time.isoformat(),
+            'bt_mir': d.bt_mir, 'bt_tir': d.bt_tir,
+        } for d in detections]
         _db.insert_frp_detections(db_rows)
+
     return jsonify({
         'status': 'ok',
-        'detections_fetched': len(features),
+        'detections_fetched': len(detections),
         'detections_in_db': _db.count_frp_detections(hours=24),
     })
 
