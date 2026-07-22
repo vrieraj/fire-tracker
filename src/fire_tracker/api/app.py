@@ -388,9 +388,21 @@ def cron_run():
 
 @app.route('/api/cron/scrapers', methods=['GET', 'POST'])
 def cron_scrapers():
-    orch = FireOrchestrator(_DB_PATH)
-    stats = orch.run()
-    return jsonify(stats)
+    import threading
+    result = [{'stats': None, 'done': False}]
+    def _run():
+        try:
+            orch = FireOrchestrator(_DB_PATH)
+            result[0]['stats'] = orch.run()
+        except Exception as e:
+            result[0]['stats'] = {'error': str(e)}
+        result[0]['done'] = True
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=25)
+    if result[0]['done']:
+        return jsonify(result[0]['stats'])
+    return jsonify({'status': 'running', 'message': 'scrapers started in background'})
 
 
 @app.route('/api/cron/monitor', methods=['GET', 'POST'])
