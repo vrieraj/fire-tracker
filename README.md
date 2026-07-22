@@ -1,14 +1,21 @@
 # Fire Tracker
 
-European wildfire tracking aggregator that collects data from official platforms across Spain, Portugal, and France.
+European wildfire tracking aggregator. Collects fire data from official platforms across Spain, Portugal, and France, deduplicates, and serves via REST API.
 
-## Features
+Live: [fire-tracker-z83q.onrender.com](https://fire-tracker-z83q.onrender.com)
 
-- Multi-source fire tracking (INFOCA, feuxdeforet.fr, incendiscat.cat, fogos.pt, INCyL, FIDIAS CLM)
-- Automatic deduplication across sources
-- SQLite persistence with state history
-- REST API for frontend integration
-- Mobile-friendly viewer (planned)
+## Data Sources
+
+| Source | Region | Official Platform |
+|--------|--------|-------------------|
+| INFOCA | Andalucia | [juntadeandalucia.es/infoca](https://www.juntadeandalucia.es/organismos/agriculturaganaderiapescaagroalimentacion/areas/agricultura/infoca) |
+| INCyL | Castilla y Leon | [incendios.castillayleon.es](https://incendios.castillayleon.es) |
+| FIDIAS CLM | Castilla-La Mancha | [fidias.castillalamancha.es](https://fidias.castillalamancha.es) |
+| incendiscat.cat | Catalunya | [incendiscat.cat](https://www.incendiscat.cat) |
+| fogos.pt | Portugal | [fogos.pt](https://fogos.pt) |
+| feuxdeforet.fr | France | [feuxdeforet.fr](https://www.feuxdeforet.fr) |
+| LSA SAF FRP | ES/PT/FR (satellite) | [lasaf.ipma.pt](https://lasaf.ipma.pt) |
+| X.com Monitor | Spain (regions w/o scraper) | [@112Arago](https://x.com/112Arago), [@112cmadrid](https://x.com/112cmadrid), [@emergenciascv](https://x.com/emergenciascv), [@112euskadi](https://x.com/112euskadi), [@112asturias](https://x.com/112asturias) |
 
 ## Setup
 
@@ -16,41 +23,47 @@ European wildfire tracking aggregator that collects data from official platforms
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
+playwright install chromium
 ```
 
 ## Usage
 
-### Run the orchestrator
-
 ```bash
+# Run all scrapers
 python -m fire_tracker.orchestrator
-```
 
-### Start the API server
+# Run X.com fire monitor
+python -m fire_tracker.monitor
 
-```bash
+# Start API server
 python -m fire_tracker.api.app
-# → http://localhost:5000
 ```
 
-### API Endpoints
+## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Frontend (Leaflet map) |
+| `/ping` | GET | Health check |
 | `/api/fires/tracked` | GET | GeoJSON of active fires |
-| `/api/fires/refresh` | POST | Re-run all scrapers |
 | `/api/fires/stats` | GET | Database statistics |
+| `/api/frp` | GET | FRP satellite detections (GeoJSON) |
+| `/api/cron/scrapers` | POST | Trigger official scrapers |
+| `/api/cron/monitor` | POST | Trigger X.com monitor |
+| `/api/cron/frp` | POST | Refresh FRP data |
+| `/api/geocode?q=...` | GET | Nominatim geocoding |
 
-## Data Sources
+## Architecture
 
-| Source | Region | Method |
-|--------|--------|--------|
-| INFOCA | Andalucia, Spain | ArcGIS FeatureServer |
-| feuxdeforet.fr | France | GeoJSON + scraping |
-| incendiscat.cat | Catalunya, Spain | HMAC-SHA256 API |
-| fogos.pt | Portugal | REST API |
-| INCyL | Castilla y Leon, Spain | Official API |
-| FIDIAS CLM | Castilla-La Mancha, Spain | HTML scraping + satellite |
+| Module | Responsibility |
+|--------|----------------|
+| `scrapers/` | One scraper per data source |
+| `database.py` | Dual SQLite/PostgreSQL |
+| `orchestrator.py` | Runs scrapers, deduplicates, persists |
+| `monitor.py` | X.com fire mention monitor |
+| `frp.py` | LSA SAF FRP satellite data |
+| `weather.py` | Nominatim geocoding + elevation |
+| `api/app.py` | Flask REST API |
 
 ## License
 
