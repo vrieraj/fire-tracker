@@ -369,6 +369,32 @@ class FireDatabase:
                 )
                 conn.commit()
 
+    def mark_source_extinguished(self, source: str) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE fires SET status = 'extinguished', last_updated = %s "
+                    "WHERE source = %s AND status != 'extinguished'",
+                    (now, source),
+                )
+                count = cur.rowcount
+                conn.commit()
+                return count
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE fires SET status = 'extinguished', last_updated = ? "
+                    "WHERE source = ? AND status != 'extinguished'",
+                    (now, source),
+                )
+                conn.commit()
+                return cur.rowcount
+
     def count(self) -> int:
         conn = self._connect()
         try:

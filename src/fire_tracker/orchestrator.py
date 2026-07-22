@@ -47,6 +47,7 @@ class FireOrchestrator:
 
         for scraper in self.scrapers:
             try:
+                self.db.mark_source_extinguished(scraper.source)
                 incidents = scraper.fetch()
                 stats['sources'][scraper.source] = len(incidents)
                 all_incidents.extend(incidents)
