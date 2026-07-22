@@ -16,3 +16,4 @@ data/fidias_enriched.json
 src/data/
 .pytest_cache/
 .ruff_cache/
+AGENTS.md
