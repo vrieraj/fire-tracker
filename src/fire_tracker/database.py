@@ -45,65 +45,64 @@ class FireDatabase:
         return param_char
 
     def _init_pg(self):
-        conn = self._connect()
-        try:
-            cur = conn.cursor()
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS fires (
-                    source VARCHAR(50) NOT NULL,
-                    external_id VARCHAR(100) NOT NULL,
-                    source_url TEXT,
-                    latitude DOUBLE PRECISION,
-                    longitude DOUBLE PRECISION,
-                    municipality TEXT,
-                    province TEXT,
-                    region TEXT,
-                    country VARCHAR(10) DEFAULT 'ES',
-                    status VARCHAR(50) DEFAULT 'unknown',
-                    fire_type VARCHAR(50),
-                    detection_date TEXT,
-                    extinction_date TEXT,
-                    area_ha DOUBLE PRECISION,
-                    resources TEXT,
-                    raw_data TEXT,
-                    last_updated TEXT NOT NULL,
-                    PRIMARY KEY (source, external_id)
-                )
-            ''')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS fire_history (
-                    id SERIAL PRIMARY KEY,
-                    source VARCHAR(50) NOT NULL,
-                    external_id VARCHAR(100) NOT NULL,
-                    status VARCHAR(50) NOT NULL,
-                    changed_at TEXT NOT NULL,
-                    FOREIGN KEY (source, external_id) REFERENCES fires(source, external_id)
-                )
-            ''')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_fires_status ON fires(status)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_fires_country ON fires(country)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_fires_coords ON fires(latitude, longitude)')
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS frp_detections (
-                    id SERIAL PRIMARY KEY,
-                    longitude DOUBLE PRECISION NOT NULL,
-                    latitude DOUBLE PRECISION NOT NULL,
-                    frp_mw DOUBLE PRECISION NOT NULL,
-                    confidence DOUBLE PRECISION,
-                    frp_uncertainty DOUBLE PRECISION,
-                    pixel_size_km2 DOUBLE PRECISION,
-                    acquisition_time TEXT NOT NULL,
-                    bt_mir DOUBLE PRECISION,
-                    bt_tir DOUBLE PRECISION,
-                    inserted_at TEXT NOT NULL,
-                    UNIQUE(longitude, latitude, acquisition_time)
-                )
-            ''')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_frp_acq ON frp_detections(acquisition_time)')
-            cur.execute('CREATE INDEX IF NOT EXISTS idx_frp_coords ON frp_detections(latitude, longitude)')
-            conn.commit()
-        finally:
-            conn.close()
+        _DDL = [
+            '''CREATE TABLE IF NOT EXISTS fires (
+                source VARCHAR(50) NOT NULL,
+                external_id VARCHAR(100) NOT NULL,
+                source_url TEXT,
+                latitude DOUBLE PRECISION,
+                longitude DOUBLE PRECISION,
+                municipality TEXT,
+                province TEXT,
+                region TEXT,
+                country VARCHAR(10) DEFAULT 'ES',
+                status VARCHAR(50) DEFAULT 'unknown',
+                fire_type VARCHAR(50),
+                detection_date TEXT,
+                extinction_date TEXT,
+                area_ha DOUBLE PRECISION,
+                resources TEXT,
+                raw_data TEXT,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (source, external_id)
+            )''',
+            '''CREATE TABLE IF NOT EXISTS fire_history (
+                id SERIAL PRIMARY KEY,
+                source VARCHAR(50) NOT NULL,
+                external_id VARCHAR(100) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                changed_at TEXT NOT NULL,
+                FOREIGN KEY (source, external_id) REFERENCES fires(source, external_id)
+            )''',
+            'CREATE INDEX IF NOT EXISTS idx_fires_status ON fires(status)',
+            'CREATE INDEX IF NOT EXISTS idx_fires_country ON fires(country)',
+            'CREATE INDEX IF NOT EXISTS idx_fires_coords ON fires(latitude, longitude)',
+            '''CREATE TABLE IF NOT EXISTS frp_detections (
+                id SERIAL PRIMARY KEY,
+                longitude DOUBLE PRECISION NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                frp_mw DOUBLE PRECISION NOT NULL,
+                confidence DOUBLE PRECISION,
+                frp_uncertainty DOUBLE PRECISION,
+                pixel_size_km2 DOUBLE PRECISION,
+                acquisition_time TEXT NOT NULL,
+                bt_mir DOUBLE PRECISION,
+                bt_tir DOUBLE PRECISION,
+                inserted_at TEXT NOT NULL,
+                UNIQUE(longitude, latitude, acquisition_time)
+            )''',
+            'CREATE INDEX IF NOT EXISTS idx_frp_acq ON frp_detections(acquisition_time)',
+            'CREATE INDEX IF NOT EXISTS idx_frp_coords ON frp_detections(latitude, longitude)',
+        ]
+        for ddl in _DDL:
+            conn = self._connect()
+            try:
+                conn.autocommit = True
+                conn.cursor().execute(ddl)
+            except Exception as e:
+                logger.warning('DDL skipped: %s — %s', ddl[:60].strip(), e)
+            finally:
+                conn.close()
 
     def _init_sqlite(self):
         with self._connect() as conn:
