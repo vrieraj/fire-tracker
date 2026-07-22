@@ -370,7 +370,7 @@ def ping():
     return jsonify({"status": "ok"})
 
 
-@app.route('/api/cron/run', methods=['POST'])
+@app.route('/api/cron/run', methods=['GET', 'POST'])
 def cron_run():
     stats = {}
     try:
@@ -386,26 +386,26 @@ def cron_run():
     return jsonify(stats)
 
 
-@app.route('/api/cron/scrapers', methods=['POST'])
+@app.route('/api/cron/scrapers', methods=['GET', 'POST'])
 def cron_scrapers():
     orch = FireOrchestrator(_DB_PATH)
     stats = orch.run()
     return jsonify(stats)
 
 
-@app.route('/api/cron/monitor', methods=['POST'])
+@app.route('/api/cron/monitor', methods=['GET', 'POST'])
 def cron_monitor():
     from fire_tracker.monitor import run_monitor
     stats = run_monitor()
     return jsonify(stats)
 
 
-@app.route('/api/cron/stations', methods=['POST'])
+@app.route('/api/cron/stations', methods=['GET', 'POST'])
 def cron_stations():
     return jsonify({"status": "ok", "message": "station cache cleanup (no-op)"})
 
 
-@app.route('/api/cron/frp', methods=['POST'])
+@app.route('/api/cron/frp', methods=['GET', 'POST'])
 def cron_frp():
     from fire_tracker.frp import fetch_frp
     from fire_tracker.frp import _list_csv_urls, _download_csv, _parse_csv, _get_age_color, _BBOX
