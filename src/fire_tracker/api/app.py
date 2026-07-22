@@ -46,6 +46,13 @@ SOURCE_MAIN_URLS = {
     'fidias_clm': 'https://fidias.castillalamancha.es/',
 }
 
+SOURCE_SECONDARY_URLS = {
+    'incendiscat.cat': {
+        'url': 'https://interior.gencat.cat/ca/arees_dactuacio/bombers/actuacions-de-bombers',
+        'label': 'Interior.gencat',
+    },
+}
+
 SOURCE_LABELS = {
     'infoca': 'INFOCA (Andalucia)',
     'feuxdeforet.fr': 'feuxdeforet.fr (Francia)',
@@ -90,6 +97,7 @@ def fires_tracked():
                 'source_label': SOURCE_LABELS.get(f['source'], f['source']),
                 'external_id': f['external_id'],
                 'source_url': f.get('source_url') or SOURCE_MAIN_URLS.get(f['source']),
+                'source_secondary': SOURCE_SECONDARY_URLS.get(f['source']),
                 'chronology_url': raw_data.get('chronology_url', ''),
                 'municipality': f.get('municipality'),
                 'province': f.get('province'),

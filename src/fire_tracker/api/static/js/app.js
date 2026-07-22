@@ -326,6 +326,7 @@
           <span>Area: <b>${areaText}</b></span><br>
           ${dateText ? `<span>Deteccion: ${dateText}</span><br>` : ''}
           <span>Fuente: <a href="${sourceUrl}" target="_blank" style="color:#ef6c35">${p.source_label}</a></span>
+          ${p.source_secondary ? `<br><span>Fuente oficial: <a href="${p.source_secondary.url}" target="_blank" style="color:#ef6c35">${p.source_secondary.label}</a></span>` : ''}
           ${sun ? `<br><span style="font-size:0.78rem;color:#888">☀ ${sun.sunrise} · ☽ ${sun.sunset}</span>` : ''}
           <hr style="margin:4px 0;border-color:#444">
           <div style="display:flex;flex-direction:column;gap:4px">
