@@ -41,7 +41,7 @@ SOURCE_MAIN_URLS = {
     'infoca': 'https://www.juntadeandalucia.es/institucion/junta-de-andalucia/area-de-agricultura-ganaderia-pesca-y-desarrollo-sostenible/consejeria-de-agricultura-ganaderia-pesca-y-desarrollo-sostenible/medio-forestal/incendios-forestales',
     'feuxdeforet.fr': 'https://feuxdeforet.fr/',
     'incendiscat.cat': 'https://incendiscat.cat/',
-    'fogos.pt': 'https://fogos.pt/',
+    'fogos.pt': 'https://www.sgifr.gov.pt/fogos-incendios-rurais-ativos',
     'incendios_cyl': 'https://servicios.jcyl.es/incyl/incyl',
     'fidias_clm': 'https://fidias.castillalamancha.es/',
 }
@@ -50,6 +50,10 @@ SOURCE_SECONDARY_URLS = {
     'incendiscat.cat': {
         'url': 'https://interior.gencat.cat/ca/arees_dactuacio/bombers/actuacions-de-bombers',
         'label': 'Interior.gencat',
+    },
+    'fogos.pt': {
+        'url': 'https://www.sgifr.gov.pt/fogos-incendios-rurais-ativos',
+        'label': 'SGIFR',
     },
 }
 
