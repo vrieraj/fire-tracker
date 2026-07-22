@@ -38,8 +38,16 @@ pip install -e .
 | feuxdeforet.fr | France | None (public GeoJSON) | Working |
 | incendiscat.cat | Catalunya | HMAC-SHA256 (embedded key) | Working (key may rotate) |
 | fogos.pt | Portugal | None (public API) | Working |
+| SGIFR | Portugal | None (public portal) | Working |
 | INCyL | Castilla y Leon | None (official API) | Working |
 | FIDIAS CLM | Castilla-La Mancha | None (HTML + satellite) | Working |
+
+### Fire detail links
+
+| Source | URL pattern |
+|--------|-------------|
+| fogos.pt | `https://fogos.pt/pt/fogo/{id}/detalhe` |
+| incendiscat.cat | `https://incendiscat.cat/detail.php?id={id}` |
 
 ## FRP (Fire Radiative Power)
 
@@ -104,6 +112,7 @@ Satellite fire detection data from LSA SAF (IPMA/LSA SAF).
 | Castilla y León | IncendiosCyLScraper | INCyL |
 | Castilla-La Mancha | FidiasClmScraper | FIDIAS CLM + FRP |
 | Portugal | FogosPtScraper | fogos.pt |
+| Portugal | SGIFR (referencia) | sgifr.gov.pt |
 | Francia | FeuxDeForetFrScraper | feuxdeforet.fr |
 
 ### Without scrapers (xmonitor via #IF + FRP)

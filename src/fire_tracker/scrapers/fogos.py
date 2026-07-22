@@ -95,7 +95,7 @@ class FogosPtScraper(FireScraper):
             area_data = props.get('icnf', {}) or {}
             area_ha = area_data.get('burnArea', {}).get('total') if area_data else None
 
-            source_url = props.get('url') or f'https://fogos.pt/fires/{fire_id}'
+            source_url = props.get('url') or f'https://fogos.pt/pt/fogo/{fire_id}/detalhe'
 
             incidents.append(FireIncident(
                 source=self.source,
