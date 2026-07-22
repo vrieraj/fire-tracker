@@ -32,7 +32,16 @@ class FeuxDeForetFrScraper(FireScraper):
 
     def fetch(self) -> list[FireIncident]:
         try:
-            resp = self._get(_FDF_GEOJSON_URL)
+            import requests as _req
+            s = _req.Session()
+            s.headers.update({
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Referer': 'https://feuxdeforet.fr/fdf/cartographie',
+            })
+            s.get('https://feuxdeforet.fr/', timeout=15)
+            resp = s.get(_FDF_GEOJSON_URL, timeout=30)
             resp.raise_for_status()
             data = resp.json()
         except Exception as e:
