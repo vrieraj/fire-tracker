@@ -419,60 +419,68 @@ def cron_stations():
 
 @app.route('/api/cron/frp', methods=['GET', 'POST'])
 def cron_frp():
-    from fire_tracker.frp import fetch_frp
-    from fire_tracker.frp import _list_csv_urls, _download_csv, _parse_csv, _get_age_color, _BBOX
-    from datetime import datetime, timezone, timedelta
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import base64, os
+    import threading
+    result = [{'stats': None, 'done': False}]
 
-    now = datetime.now(timezone.utc)
-    user = os.environ.get('LSA_SAF_USER', '')
-    passwd = os.environ.get('LSA_SAF_PASS', '')
-    auth = base64.b64encode(f'{user}:{passwd}'.encode()).decode() if user else None
+    def _run():
+        try:
+            from fire_tracker.frp import _list_csv_urls, _download_csv, _parse_csv
+            from datetime import datetime, timezone, timedelta
+            from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    all_urls = []
-    for h in range(25):
-        d = now - timedelta(hours=h)
-        all_urls.extend(_list_csv_urls(d))
+            now = datetime.now(timezone.utc)
+            all_urls = []
+            for h in range(25):
+                d = now - timedelta(hours=h)
+                all_urls.extend(_list_csv_urls(d))
+            sampled = all_urls[::6][:12]
 
-    sampled = all_urls[::6][:12]
+            seen = set()
+            detections = []
 
-    seen = set()
-    detections = []
+            def fetch_one(url):
+                csv_text = _download_csv(url)
+                if csv_text:
+                    return _parse_csv(csv_text)
+                return []
 
-    def fetch_one(url):
-        csv_text = _download_csv(url)
-        if csv_text:
-            return _parse_csv(csv_text)
-        return []
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                futures = {ex.submit(fetch_one, u): u for u in sampled}
+                for f in as_completed(futures, timeout=60):
+                    try:
+                        for d in f.result(timeout=5):
+                            key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
+                            if key not in seen:
+                                seen.add(key)
+                                detections.append(d)
+                    except Exception:
+                        pass
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futures = {ex.submit(fetch_one, u): u for u in sampled}
-        for f in as_completed(futures, timeout=60):
-            try:
-                for d in f.result(timeout=5):
-                    key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
-                    if key not in seen:
-                        seen.add(key)
-                        detections.append(d)
-            except Exception:
-                pass
+            if detections:
+                db_rows = [{
+                    'longitude': d.longitude, 'latitude': d.latitude,
+                    'frp_mw': d.frp_mw, 'confidence': d.confidence,
+                    'frp_uncertainty': d.frp_uncertainty, 'pixel_size_km2': d.pixel_size_km2,
+                    'acquisition_time': d.acquisition_time.isoformat(),
+                    'bt_mir': d.bt_mir, 'bt_tir': d.bt_tir,
+                } for d in detections]
+                _db.insert_frp_detections(db_rows)
 
-    if detections:
-        db_rows = [{
-            'longitude': d.longitude, 'latitude': d.latitude,
-            'frp_mw': d.frp_mw, 'confidence': d.confidence,
-            'frp_uncertainty': d.frp_uncertainty, 'pixel_size_km2': d.pixel_size_km2,
-            'acquisition_time': d.acquisition_time.isoformat(),
-            'bt_mir': d.bt_mir, 'bt_tir': d.bt_tir,
-        } for d in detections]
-        _db.insert_frp_detections(db_rows)
+            result[0]['stats'] = {
+                'status': 'ok',
+                'detections_fetched': len(detections),
+                'detections_in_db': _db.count_frp_detections(hours=24),
+            }
+        except Exception as e:
+            result[0]['stats'] = {'status': 'error', 'error': str(e)}
+        result[0]['done'] = True
 
-    return jsonify({
-        'status': 'ok',
-        'detections_fetched': len(detections),
-        'detections_in_db': _db.count_frp_detections(hours=24),
-    })
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=25)
+    if result[0]['done']:
+        return jsonify(result[0]['stats'])
+    return jsonify({'status': 'running', 'message': 'FRP fetch started in background'})
 
 
 if __name__ == '__main__':
