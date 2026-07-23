@@ -441,11 +441,11 @@ def cron_frp():
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             now = datetime.now(timezone.utc)
+            # Only last 2 hours — catches all new timestamps
             all_urls = []
-            for h in range(25):
+            for h in range(3):
                 d = now - timedelta(hours=h)
                 all_urls.extend(_list_csv_urls(d))
-            sampled = all_urls[::6][:12]
 
             seen = set()
             detections = []
@@ -456,17 +456,20 @@ def cron_frp():
                     return _parse_csv(csv_text)
                 return []
 
-            with ThreadPoolExecutor(max_workers=4) as ex:
-                futures = {ex.submit(fetch_one, u): u for u in sampled}
-                for f in as_completed(futures, timeout=60):
-                    try:
-                        for d in f.result(timeout=5):
-                            key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
-                            if key not in seen:
-                                seen.add(key)
-                                detections.append(d)
-                    except Exception:
-                        pass
+            batch_size = 30
+            for i in range(0, len(all_urls), batch_size):
+                batch = all_urls[i:i+batch_size]
+                with ThreadPoolExecutor(max_workers=6) as ex:
+                    futures = {ex.submit(fetch_one, u): u for u in batch}
+                    for f in as_completed(futures, timeout=30):
+                        try:
+                            for d in f.result(timeout=10):
+                                key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
+                                if key not in seen:
+                                    seen.add(key)
+                                    detections.append(d)
+                        except Exception:
+                            pass
 
             if detections:
                 db_rows = [{
