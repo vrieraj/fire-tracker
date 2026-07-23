@@ -230,6 +230,18 @@
       link.onclick = (e) => e.stopPropagation();
       frpLabel.appendChild(link);
     }
+
+    // Add EFFIS link to perimeters overlay
+    const effisLabel = findLabelByText('Perímetros EFFIS');
+    if (effisLabel) {
+      const link = document.createElement('a');
+      link.href = 'https://forest-fire.emergency.copernicus.eu/apps/effis/current-situation/';
+      link.target = '_blank';
+      link.textContent = 'EFFIS';
+      link.className = 'eumetsat-view-link';
+      link.onclick = (e) => e.stopPropagation();
+      effisLabel.appendChild(link);
+    }
   });
 
   // ── Fire status colors ─────────────────────────────
