@@ -39,12 +39,21 @@ _BBOX = {
 # Minimum confidence to include a detection (0-1)
 _MIN_CONFIDENCE = 0.5
 
-# Keep 24h of data
-_WINDOW_HOURS = 24
+# Keep 7 days of data
+_WINDOW_HOURS = 168
 
-# Colors: recent = yellow→red, older = red→pink
-_RECENT_COLORS = ['#ffdd00', '#ffaa00', '#ff6600', '#ff0000']  # high FRP → low FRP (recent)
-_OLDER_COLORS = ['#ff0000', '#dd4488', '#cc66aa', '#dd88bb']   # high FRP → low FRP (older)
+# Colors: 7-day gradient gray → red (by age)
+# Oldest (7d) → newest (0h)
+_AGE_COLORS = [
+    '#999999',  # 7d — light gray
+    '#aa8877',  # 5d — warm gray
+    '#cc7744',  # 3d — dark orange
+    '#ee5522',  # 2d — red-orange
+    '#ff3300',  # 1d — red
+    '#ff1100',  # 12h — bright red
+    '#ff0000',  # 6h — pure red
+    '#ff0000',  # 0h — pure red (newest)
+]
 
 
 @dataclass
@@ -173,26 +182,25 @@ def _parse_csv(csv_text: str) -> list[FRPDetection]:
 
 def _get_age_color(age_hours: float, frp_mw: float) -> tuple[str, int]:
     """
-    Get color based on detection age and FRP intensity.
-
-    Recent (<6h): yellow (high FRP) → red (low FRP)
-    Older (6-24h): red (high FRP) → pink (low FRP)
+    Get color based on detection age (7-day gradient: gray → red).
+    Also returns opacity as0-255 alpha value for fillOpacity.
     """
-    # Normalize FRP to 0-1 (cap at 200 MW for scaling)
+    # Map age to color index (0=oldest, len-1=newest)
+    max_age = _WINDOW_HOURS  # 168h
+    age_ratio = min(age_hours / max_age, 1.0)  # 1.0 = oldest, 0.0 = newest
+    idx = int((1.0 - age_ratio) * (len(_AGE_COLORS) - 1))  # reversed: newest=last
+    color = _AGE_COLORS[min(idx, len(_AGE_COLORS) - 1)]
+
+    # Size: larger for recent, smaller for old
     frp_norm = min(frp_mw / 200.0, 1.0)
-
-    if age_hours < 6:
-        # Recent: yellow → red
-        colors = _RECENT_COLORS
-        idx = int(frp_norm * (len(colors) - 1))
+    if age_hours < 24:
         size = 5 + int(frp_norm * 5)  # 5-10
-    else:
-        # Older: red → pink
-        colors = _OLDER_COLORS
-        idx = int(frp_norm * (len(colors) - 1))
+    elif age_hours < 72:
         size = 4 + int(frp_norm * 4)  # 4-8
+    else:
+        size = 3 + int(frp_norm * 3)  # 3-6
 
-    return colors[min(idx, len(colors) - 1)], size
+    return color, size
 
 
 def fetch_frp() -> dict:

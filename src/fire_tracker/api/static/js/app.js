@@ -6,6 +6,8 @@
   let searchTimeout = null;
   let stationLayer = L.layerGroup();
   let lastClickLatLng = null;
+  let perimeterLayer = null;
+  let perimeterData = [];
 
   const $ = (s) => document.querySelector(s);
   const mapEl = $('#map');
@@ -78,12 +80,17 @@
   let frpLayer = L.geoJSON(null, {
     pointToLayer: (feature, latlng) => {
       const p = feature.properties;
+      const age = p.age_hours || 0;
+      let fillOpacity;
+      if (age < 24) fillOpacity = 0.7;
+      else if (age < 72) fillOpacity = 0.5;
+      else fillOpacity = 0.3;
       return L.circleMarker(latlng, {
         radius: p.radius || 6,
-        fillColor: p.color || '#ffaa00',
-        color: p.color || '#ffaa00',
+        fillColor: p.color || '#ff0000',
+        color: p.color || '#ff0000',
         weight: 0,
-        fillOpacity: 0.5,
+        fillOpacity: fillOpacity,
       });
     },
     onEachFeature: (feature, layer) => {
@@ -115,6 +122,42 @@
     },
   });
 
+  // Perimeter layer (loaded dynamically from /api/perimeters)
+  perimeterLayer = L.geoJSON(null, {
+    style: (feature) => ({
+      color: '#ff4444',
+      weight: 2,
+      fillColor: '#ff0000',
+      fillOpacity: 0.25,
+      opacity: 0.8,
+    }),
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties;
+      let dateStr = p.fire_date || '';
+      try {
+        const dt = new Date(p.fire_date);
+        const months = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+        const day = dt.getUTCDate();
+        const mon = months[dt.getUTCMonth()];
+        const year = dt.getUTCFullYear();
+        dateStr = `${day} ${mon} ${year}`;
+      } catch(e) {}
+      layer.bindPopup(`
+        <div style="font-family:sans-serif;min-width:160px">
+          <strong style="color:#ff4444">🔥 Perímetro EFFIS</strong>
+          <hr style="margin:4px 0;border-color:#444">
+          <div style="font-size:0.85rem">
+            <b>Fecha:</b> ${dateStr}<br>
+            <b>Área:</b> ${p.area_ha ? p.area_ha + ' ha' : 'N/D'}<br>
+            <b>País:</b> ${p.country || 'N/D'}<br>
+            <b>Provincia:</b> ${p.province || 'N/D'}<br>
+            <b>Clase:</b> ${p.class || 'N/D'}
+          </div>
+        </div>
+      `);
+    },
+  });
+
   // Build layer control
   const baseLayers = {
     'OSM Callejero': layers.street,
@@ -129,6 +172,7 @@
 
   const overlayLayers = {
     '🔥 FRP (LSA SAF)': frpLayer,
+    '🗺️ Perímetros EFFIS': perimeterLayer,
     '📡 Estaciones': stationLayer,
   };
 
@@ -343,6 +387,11 @@
 
       marker.fireId = p.id;
       markers[p.id] = marker;
+
+      // Highlight nearby perimeters on marker click
+      marker.on('click', () => {
+        highlightNearbyPerimeters(lat, lon, 15);
+      });
     }
 
     // Ensure fire markers are on top of all layers
@@ -383,6 +432,8 @@
         e.originalEvent.target.closest('.leaflet-interactive')) {
       return;
     }
+    // Reset perimeters transparency when clicking empty map
+    resetPerimeters();
     lastClickLatLng = e.latlng;
     const { lat, lng } = e.latlng;
 
@@ -677,7 +728,55 @@
     }
   }
 
+  // ── EFFIS Perimeters ─────────────────────────────
+  function haversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+
+  async function loadPerimeters() {
+    try {
+      const res = await fetch('/api/perimeters');
+      const geojson = await res.json();
+      perimeterLayer.clearLayers();
+      if (geojson.features?.length) {
+        perimeterData = geojson.features;
+        perimeterLayer.addData(geojson);
+        console.log(`EFFIS: ${geojson.features.length} perimeters loaded`);
+      }
+    } catch (e) {
+      console.error('Perimeters load error:', e);
+    }
+  }
+
+  function highlightNearbyPerimeters(lat, lon, radiusKm) {
+    perimeterLayer.eachLayer((layer) => {
+      const geom = layer.feature.geometry;
+      const center = geom.type === 'Polygon'
+        ? layer.getBounds().getCenter()
+        : layer.getBounds().getCenter();
+      const dist = haversineDistance(lat, lon, center.lat, center.lng);
+      if (dist < radiusKm) {
+        layer.setStyle({ fillOpacity: 0.7, opacity: 1, weight: 3 });
+      } else {
+        layer.setStyle({ fillOpacity: 0.15, opacity: 0.4, weight: 1 });
+      }
+    });
+  }
+
+  function resetPerimeters() {
+    perimeterLayer.eachLayer((layer) => {
+      layer.setStyle({ fillOpacity: 0.25, opacity: 0.8, weight: 2 });
+    });
+  }
+
   // ── Init ───────────────────────────────────────────
   loadFires();
   loadFRP();
+  loadPerimeters();
 })();

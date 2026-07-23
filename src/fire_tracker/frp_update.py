@@ -79,10 +79,13 @@ def run_frp_update(hours: int = 3) -> dict:
     else:
         inserted = 0
 
-    total_db = db.count_frp_detections(hours=24)
+    # Purge old detections (>7 days)
+    deleted = db.purge_frp_detections(hours=168)
+    total_db = db.count_frp_detections(hours=168)
     stats = {
         'detections_fetched': len(detections),
         'inserted': inserted,
+        'deleted': deleted,
         'detections_in_db': total_db,
     }
     logger.info('FRP: fetched=%d, inserted=%d, total_24h=%d',
@@ -95,7 +98,8 @@ def main():
     print(f"\n--- FRP Update ---")
     print(f"  Fetched:     {stats['detections_fetched']}")
     print(f"  Inserted:    {stats['inserted']}")
-    print(f"  Total (24h): {stats['detections_in_db']}")
+    print(f"  Deleted (>7d): {stats['deleted']}")
+    print(f"  Total (7d):  {stats['detections_in_db']}")
 
 
 if __name__ == '__main__':

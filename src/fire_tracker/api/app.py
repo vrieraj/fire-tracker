@@ -278,13 +278,17 @@ def api_metar():
 @app.route('/api/frp')
 def api_frp():
     """
-    Get FRP fire detections for Iberia + France (last 24h).
+    Get FRP fire detections for Iberia + France (last 7 days).
 
+    Purges detections older than 7 days before serving.
     Serves from DB (fast), fetches from LSA SAF if DB is empty.
     Returns GeoJSON FeatureCollection.
     """
     from fire_tracker.frp import _get_age_color, _BBOX, _WINDOW_HOURS
     from datetime import datetime, timezone, timedelta
+
+    # Purge old detections first
+    _db.purge_frp_detections(hours=_WINDOW_HOURS)
 
     now = datetime.now(timezone.utc)
 
@@ -372,6 +376,21 @@ def api_frp():
             'bbox': _BBOX,
         },
     })
+
+
+# ── EFFIS Burnt Area Perimeters ────────────────────────────────────────────
+
+
+@app.route('/api/perimeters')
+def api_perimeters():
+    """
+    Get EFFIS burnt area perimeters for ES/PT/FR as GeoJSON.
+    Serves from DB (populated by GitHub Actions daily).
+    """
+    from fire_tracker.effis_perimeters import perimeters_to_geojson
+
+    perimeters = _db.get_perimeters()
+    return jsonify(perimeters_to_geojson(perimeters))
 
 
 # ── Cron endpoints (for cron-job.org) ─────────────────────────────────────

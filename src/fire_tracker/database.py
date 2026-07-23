@@ -93,6 +93,18 @@ class FireDatabase:
             )''',
             'CREATE INDEX IF NOT EXISTS idx_frp_acq ON frp_detections(acquisition_time)',
             'CREATE INDEX IF NOT EXISTS idx_frp_coords ON frp_detections(latitude, longitude)',
+            '''CREATE TABLE IF NOT EXISTS effis_perimeters (
+                id TEXT PRIMARY KEY,
+                fire_date TEXT,
+                last_update TEXT,
+                country TEXT,
+                province TEXT,
+                commune TEXT,
+                area_ha DOUBLE PRECISION,
+                geometry JSONB NOT NULL,
+                downloaded_at TEXT NOT NULL
+            )''',
+            'CREATE INDEX IF NOT EXISTS idx_perimeters_country ON effis_perimeters(country)',
         ]
         for ddl in _DDL:
             conn = self._connect()
@@ -159,6 +171,20 @@ class FireDatabase:
             ''')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_frp_acq ON frp_detections(acquisition_time)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_frp_coords ON frp_detections(latitude, longitude)')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS effis_perimeters (
+                    id TEXT PRIMARY KEY,
+                    fire_date TEXT,
+                    last_update TEXT,
+                    country TEXT,
+                    province TEXT,
+                    commune TEXT,
+                    area_ha REAL,
+                    geometry TEXT NOT NULL,
+                    downloaded_at TEXT NOT NULL
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_perimeters_country ON effis_perimeters(country)')
             conn.commit()
 
     def _init_db(self):
@@ -553,6 +579,41 @@ class FireDatabase:
                     (f'-{hours} hours',),
                 ).fetchone()[0]
 
+    def purge_frp_detections(self, hours: int = 168) -> int:
+        """Delete FRP detections older than N hours. Returns count deleted."""
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "DELETE FROM frp_detections "
+                    "WHERE CASE "
+                    "  WHEN acquisition_time ~ '^[0-9]{14}$' "
+                    "    THEN to_timestamp(acquisition_time, 'YYYYMMDDHH24MISS') "
+                    "  ELSE acquisition_time::timestamp "
+                    "END < NOW() - make_interval(hours => %s)",
+                    (hours,),
+                )
+                deleted = cur.rowcount
+                conn.commit()
+                return deleted
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                # Handle both ISO and compact (YYYYMMDDHH24MISS) formats
+                cur = conn.execute(
+                    "DELETE FROM frp_detections "
+                    "WHERE CASE "
+                    "  WHEN length(acquisition_time) = 14 AND acquisition_time NOT LIKE '%-%' "
+                    "    THEN datetime(substr(acquisition_time,1,4)||'-'||substr(acquisition_time,5,2)||'-'||substr(acquisition_time,7,2)||' '||substr(acquisition_time,9,2)||':'||substr(acquisition_time,11,2)||':'||substr(acquisition_time,13,2)) "
+                    "  ELSE acquisition_time "
+                    "END < datetime('now', ?)",
+                    (f'-{hours} hours',),
+                )
+                conn.commit()
+                return cur.rowcount
+
     def get_frp_by_bbox(
         self,
         lat_min: float,
@@ -597,3 +658,134 @@ class FireDatabase:
                     (f'-{hours} hours', lat_min, lat_max, lon_min, lon_max, min_confidence),
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    # ── EFFIS Perimeters methods ──────────────────────────────────
+
+    def upsert_perimeters(self, perimeters: list[dict]) -> int:
+        """Upsert EFFIS burnt area perimeters. Returns count upserted."""
+        now = datetime.now(timezone.utc).isoformat()
+        if self._is_pg:
+            return self._upsert_perimeters_pg(perimeters, now)
+        return self._upsert_perimeters_sqlite(perimeters, now)
+
+    def _upsert_perimeters_sqlite(self, perimeters: list[dict], now: str) -> int:
+        count = 0
+        with self._connect() as conn:
+            for p in perimeters:
+                geometry_json = json.dumps(p['geometry'])
+                conn.execute(
+                    'INSERT OR REPLACE INTO effis_perimeters '
+                    '(id, fire_date, last_update, country, province, commune, '
+                    'area_ha, geometry, downloaded_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (
+                        p['id'], p.get('fire_date'), p.get('last_update'),
+                        p.get('country'), p.get('province'), p.get('commune'),
+                        p.get('area_ha'), geometry_json, now,
+                    ),
+                )
+                count += 1
+            conn.commit()
+        return count
+
+    def _upsert_perimeters_pg(self, perimeters: list[dict], now: str) -> int:
+        conn = self._connect()
+        count = 0
+        try:
+            cur = conn.cursor()
+            for p in perimeters:
+                geometry_json = json.dumps(p['geometry'])
+                cur.execute(
+                    'INSERT INTO effis_perimeters '
+                    '(id, fire_date, last_update, country, province, commune, '
+                    'area_ha, geometry, downloaded_at) '
+                    'VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) '
+                    'ON CONFLICT (id) DO UPDATE SET '
+                    'fire_date = EXCLUDED.fire_date, '
+                    'last_update = EXCLUDED.last_update, '
+                    'area_ha = EXCLUDED.area_ha, '
+                    'geometry = EXCLUDED.geometry, '
+                    'downloaded_at = EXCLUDED.downloaded_at',
+                    (
+                        p['id'], p.get('fire_date'), p.get('last_update'),
+                        p.get('country'), p.get('province'), p.get('commune'),
+                        p.get('area_ha'), geometry_json, now,
+                    ),
+                )
+                count += 1
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return count
+
+    def delete_perimeter(self, perimeter_id: str) -> bool:
+        """Delete a single perimeter by ID."""
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.execute('DELETE FROM effis_perimeters WHERE id = %s', (perimeter_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                cur = conn.execute('DELETE FROM effis_perimeters WHERE id = ?', (perimeter_id,))
+                conn.commit()
+                return cur.rowcount > 0
+
+    def get_perimeters(self) -> list[dict]:
+        """Get all EFFIS perimeters as list of dicts with geometry parsed."""
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.execute('SELECT * FROM effis_perimeters ORDER BY fire_date DESC')
+                rows = cur.fetchall()
+                cols = [d[0] for d in cur.description]
+                return [self._parse_perimeter_pg(dict(zip(cols, r))) for r in rows]
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    'SELECT * FROM effis_perimeters ORDER BY fire_date DESC'
+                ).fetchall()
+            return [self._parse_perimeter_sqlite(dict(r)) for r in rows]
+
+    def get_perimeter_ids(self) -> set[str]:
+        """Get all existing perimeter IDs (for diff during update)."""
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                cur = conn.cursor()
+                cur.execute('SELECT id FROM effis_perimeters')
+                return {row[0] for row in cur.fetchall()}
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                rows = conn.execute('SELECT id FROM effis_perimeters').fetchall()
+                return {row['id'] for row in rows}
+
+    def _parse_perimeter_pg(self, row: dict) -> dict:
+        """Parse PostgreSQL row, converting geometry JSON string."""
+        if isinstance(row.get('geometry'), str):
+            try:
+                row['geometry'] = json.loads(row['geometry'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return row
+
+    def _parse_perimeter_sqlite(self, row: dict) -> dict:
+        """Parse SQLite row, converting geometry JSON string."""
+        if isinstance(row.get('geometry'), str):
+            try:
+                row['geometry'] = json.loads(row['geometry'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return row
