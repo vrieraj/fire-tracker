@@ -42,16 +42,16 @@ _MIN_CONFIDENCE = 0.5
 # Keep 7 days of data
 _WINDOW_HOURS = 168
 
-# Colors: 7-day gradient gray → red (by age)
+# Colors: 7-day gradient gray → pink → red (by age)
 # Oldest (7d) → newest (0h)
 _AGE_COLORS = [
-    '#999999',  # 7d — light gray
-    '#aa8877',  # 5d — warm gray
-    '#cc7744',  # 3d — dark orange
-    '#ee5522',  # 2d — red-orange
-    '#ff3300',  # 1d — red
-    '#ff1100',  # 12h — bright red
-    '#ff0000',  # 6h — pure red
+    '#aaaaaa',  # 7d — gray
+    '#aa8899',  # 5d — gray-pink
+    '#cc6688',  # 3d — rose
+    '#dd4477',  # 2d — deep pink
+    '#ee2255',  # 1d — vivid pink
+    '#ff1133',  # 12h — pink-red
+    '#ff0022',  # 6h — intense red
     '#ff0000',  # 0h — pure red (newest)
 ]
 
