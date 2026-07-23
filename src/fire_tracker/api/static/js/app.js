@@ -123,14 +123,18 @@
   });
 
   // Perimeter layer (loaded dynamically from /api/perimeters)
+  // Styles are set per-feature based on associated fire status
   perimeterLayer = L.geoJSON(null, {
-    style: (feature) => ({
-      color: '#ff4444',
-      weight: 2,
-      fillColor: '#ff0000',
-      fillOpacity: 0.25,
-      opacity: 0.8,
-    }),
+    style: (feature) => {
+      const color = feature.properties._fireColor || '#ff4444';
+      return {
+        color: color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.25,
+        opacity: 0.8,
+      };
+    },
     onEachFeature: (feature, layer) => {
       const p = feature.properties;
       let dateStr = p.fire_date || '';
@@ -142,16 +146,29 @@
         const year = dt.getUTCFullYear();
         dateStr = `${day} ${mon} ${year}`;
       } catch(e) {}
+
+      const fireId = p._fireId;
+      const fireName = p._fireName || '';
+      const fireStatus = p._fireStatus || '';
+
+      layer.on('click', () => {
+        if (fireId && markers[fireId]) {
+          map.setView(markers[fireId].getLatLng(), map.getZoom());
+          markers[fireId].openPopup();
+        }
+      });
+
       layer.bindPopup(`
         <div style="font-family:sans-serif;min-width:160px">
-          <strong style="color:#ff4444">🔥 Perímetro EFFIS</strong>
+          <strong style="color:${p._fireColor || '#ff4444'}">🔥 Perímetro EFFIS</strong>
           <hr style="margin:4px 0;border-color:#444">
           <div style="font-size:0.85rem">
+            ${fireName ? `<b>Incendio:</b> ${fireName}<br>` : ''}
+            ${fireStatus ? `<b>Estado:</b> ${statusLabel(fireStatus)}<br>` : ''}
             <b>Fecha:</b> ${dateStr}<br>
             <b>Área:</b> ${p.area_ha ? p.area_ha + ' ha' : 'N/D'}<br>
             <b>País:</b> ${p.country || 'N/D'}<br>
-            <b>Provincia:</b> ${p.province || 'N/D'}<br>
-            <b>Clase:</b> ${p.class || 'N/D'}
+            <b>Provincia:</b> ${p.province || 'N/D'}
           </div>
         </div>
       `);
@@ -400,9 +417,9 @@
       marker.fireId = p.id;
       markers[p.id] = marker;
 
-      // Highlight nearby perimeters on marker click
+      // Highlight only this fire's perimeters on marker click
       marker.on('click', () => {
-        highlightNearbyPerimeters(lat, lon, 15);
+        highlightFirePerimeters(p.id);
       });
     }
 
@@ -436,6 +453,9 @@
       });
       fireList.appendChild(li);
     });
+
+    // Re-render perimeters with updated fire associations
+    renderPerimeters();
   }
 
   // ── Map click → Nominatim reverse + info popup ─────
@@ -751,32 +771,100 @@
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
   }
 
+  // Statuses that should show perimeters
+  const PERIMETER_STATUSES = new Set(['active', 'declarado', 'controlled', 'stabilized']);
+
   async function loadPerimeters() {
     try {
       const res = await fetch('/api/perimeters');
       const geojson = await res.json();
-      perimeterLayer.clearLayers();
-      if (geojson.features?.length) {
-        perimeterData = geojson.features;
-        perimeterLayer.addData(geojson);
-        console.log(`EFFIS: ${geojson.features.length} perimeters loaded`);
-      }
+      perimeterData = geojson.features || [];
+      console.log(`EFFIS: ${perimeterData.length} perimeters fetched`);
+      renderPerimeters();
     } catch (e) {
       console.error('Perimeters load error:', e);
     }
   }
 
-  function highlightNearbyPerimeters(lat, lon, radiusKm) {
-    perimeterLayer.eachLayer((layer) => {
-      const geom = layer.feature.geometry;
-      const center = geom.type === 'Polygon'
-        ? layer.getBounds().getCenter()
-        : layer.getBounds().getCenter();
-      const dist = haversineDistance(lat, lon, center.lat, center.lng);
-      if (dist < radiusKm) {
-        layer.setStyle({ fillOpacity: 0.7, opacity: 1, weight: 3 });
+  function renderPerimeters() {
+    perimeterLayer.clearLayers();
+    if (!perimeterData.length || !fires.length) return;
+
+    // Build fire lookup: fireId -> { lat, lon, status, name, color }
+    const fireLookup = {};
+    for (const f of fires) {
+      const [lon, lat] = f.geometry.coordinates;
+      fireLookup[f.properties.id] = {
+        lat, lon,
+        status: f.properties.status,
+        name: f.properties.municipality || f.properties.external_id,
+        color: statusColor(f.properties.status),
+      };
+    }
+
+    // For each perimeter, find the closest fire within 15km
+    for (const feature of perimeterData) {
+      const geom = feature.geometry;
+      let cLat, cLng;
+      if (geom.type === 'Polygon') {
+        // Centroid of first ring
+        const ring = geom.coordinates[0];
+        cLng = ring.reduce((s, c) => s + c[0], 0) / ring.length;
+        cLat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
+      } else if (geom.type === 'MultiPolygon') {
+        // Use the largest polygon's centroid
+        let maxArea = 0;
+        for (const poly of geom.coordinates) {
+          const ring = poly[0];
+          const lng = ring.reduce((s, c) => s + c[0], 0) / ring.length;
+          const lat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
+          // Approximate area by bounding box
+          const lats = ring.map(c => c[1]);
+          const lngs = ring.map(c => c[0]);
+          const area = (Math.max(...lats) - Math.min(...lats)) * (Math.max(...lngs) - Math.min(...lngs));
+          if (area > maxArea) { maxArea = area; cLat = lat; cLng = lng; }
+        }
       } else {
-        layer.setStyle({ fillOpacity: 0.15, opacity: 0.4, weight: 1 });
+        continue;
+      }
+
+      // Find closest fire
+      let bestFire = null;
+      let bestDist = Infinity;
+      for (const [fireId, fire] of Object.entries(fireLookup)) {
+        const dist = haversineDistance(cLat, cLng, fire.lat, fire.lon);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestFire = { id: fireId, ...fire, dist };
+        }
+      }
+
+      // Skip if no fire within 15km or fire status not visible
+      if (!bestFire || bestDist > 15 || !PERIMETER_STATUSES.has(bestFire.status)) {
+        continue;
+      }
+
+      // Inject fire association into feature properties for styling/popup
+      feature.properties._fireId = bestFire.id;
+      feature.properties._fireName = bestFire.name;
+      feature.properties._fireStatus = bestFire.status;
+      feature.properties._fireColor = bestFire.color;
+      feature.properties._fireDist = bestDist;
+
+      perimeterLayer.addData(feature);
+    }
+
+    console.log(`EFFIS: ${perimeterLayer.getLayers().length} perimeters rendered`);
+  }
+
+  function highlightFirePerimeters(fireId) {
+    perimeterLayer.eachLayer((layer) => {
+      const fid = layer.feature.properties._fireId;
+      if (fid === fireId) {
+        layer.setStyle({ fillOpacity: 0.7, opacity: 1, weight: 3 });
+        layer.bringToFront();
+      } else {
+        layer.setStyle({ fillOpacity: 0.08, opacity: 0.2, weight: 1 });
       }
     });
   }
