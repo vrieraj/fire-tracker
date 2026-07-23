@@ -188,8 +188,8 @@
   };
 
   const overlayLayers = {
-    '🔥 FRP (LSA SAF)': frpLayer,
     '🗺️ Perímetros EFFIS': perimeterLayer,
+    '🔥 FRP (LSA SAF)': frpLayer,
     '📡 Estaciones': stationLayer,
   };
 
@@ -790,61 +790,95 @@
     perimeterLayer.clearLayers();
     if (!perimeterData.length || !fires.length) return;
 
-    // Build fire lookup: fireId -> { lat, lon, status, name, color }
-    const fireLookup = {};
-    for (const f of fires) {
+    // Build fire list: [{ id, lat, lon, status, name, color }]
+    const fireList = fires.map(f => {
       const [lon, lat] = f.geometry.coordinates;
-      fireLookup[f.properties.id] = {
+      return {
+        id: f.properties.id,
         lat, lon,
         status: f.properties.status,
         name: f.properties.municipality || f.properties.external_id,
         color: statusColor(f.properties.status),
       };
+    });
+
+    // Point-in-polygon (ray casting)
+    function pointInRing(lon, lat, ring) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      return inside;
     }
 
-    // For each perimeter, find the closest fire within 15km
+    function pointInGeom(lon, lat, geom) {
+      if (geom.type === 'Polygon') {
+        return pointInRing(lon, lat, geom.coordinates[0]);
+      }
+      if (geom.type === 'MultiPolygon') {
+        for (const poly of geom.coordinates) {
+          if (pointInRing(lon, lat, poly[0])) return true;
+        }
+      }
+      return false;
+    }
+
+    // Bounding box center as fallback centroid
+    function geomCenter(geom) {
+      let coords;
+      if (geom.type === 'Polygon') coords = geom.coordinates[0];
+      else if (geom.type === 'MultiPolygon') coords = geom.coordinates[0][0];
+      else return null;
+      const lngs = coords.map(c => c[0]);
+      const lats = coords.map(c => c[1]);
+      return {
+        lat: (Math.min(...lats) + Math.max(...lats)) / 2,
+        lng: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+      };
+    }
+
+    let matched = 0, skipped = 0;
     for (const feature of perimeterData) {
       const geom = feature.geometry;
-      let cLat, cLng;
-      if (geom.type === 'Polygon') {
-        // Centroid of first ring
-        const ring = geom.coordinates[0];
-        cLng = ring.reduce((s, c) => s + c[0], 0) / ring.length;
-        cLat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
-      } else if (geom.type === 'MultiPolygon') {
-        // Use the largest polygon's centroid
-        let maxArea = 0;
-        for (const poly of geom.coordinates) {
-          const ring = poly[0];
-          const lng = ring.reduce((s, c) => s + c[0], 0) / ring.length;
-          const lat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
-          // Approximate area by bounding box
-          const lats = ring.map(c => c[1]);
-          const lngs = ring.map(c => c[0]);
-          const area = (Math.max(...lats) - Math.min(...lats)) * (Math.max(...lngs) - Math.min(...lngs));
-          if (area > maxArea) { maxArea = area; cLat = lat; cLng = lng; }
-        }
-      } else {
-        continue;
-      }
+      const center = geomCenter(geom);
+      if (!center) continue;
 
-      // Find closest fire
+      // Strategy 1: point-in-polygon — fire marker inside the perimeter
       let bestFire = null;
       let bestDist = Infinity;
-      for (const [fireId, fire] of Object.entries(fireLookup)) {
-        const dist = haversineDistance(cLat, cLng, fire.lat, fire.lon);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestFire = { id: fireId, ...fire, dist };
+      for (const fire of fireList) {
+        if (pointInGeom(fire.lon, fire.lat, geom)) {
+          const dist = haversineDistance(center.lat, center.lng, fire.lat, fire.lon);
+          if (!bestFire || dist < bestDist) {
+            bestDist = dist;
+            bestFire = fire;
+          }
         }
       }
 
-      // Skip if no fire within 15km or fire status not visible
-      if (!bestFire || bestDist > 15 || !PERIMETER_STATUSES.has(bestFire.status)) {
+      // Strategy 2: fallback — closest fire within 30km of centroid
+      if (!bestFire) {
+        for (const fire of fireList) {
+          const dist = haversineDistance(center.lat, center.lng, fire.lat, fire.lon);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestFire = fire;
+          }
+        }
+        if (bestDist > 30) bestFire = null;
+      }
+
+      // Skip if no match or fire status not visible
+      if (!bestFire || !PERIMETER_STATUSES.has(bestFire.status)) {
+        skipped++;
         continue;
       }
 
-      // Inject fire association into feature properties for styling/popup
+      // Inject fire association
       feature.properties._fireId = bestFire.id;
       feature.properties._fireName = bestFire.name;
       feature.properties._fireStatus = bestFire.status;
@@ -852,9 +886,10 @@
       feature.properties._fireDist = bestDist;
 
       perimeterLayer.addData(feature);
+      matched++;
     }
 
-    console.log(`EFFIS: ${perimeterLayer.getLayers().length} perimeters rendered`);
+    console.log(`EFFIS: ${matched} perimeters rendered, ${skipped} skipped`);
   }
 
   function highlightFirePerimeters(fireId) {
