@@ -1,0 +1,33 @@
+name: FRP Satellite Data
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Every 30 minutes
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  frp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Update FRP data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LSA_SAF_USER: ${{ secrets.LSA_SAF_USER }}
+          LSA_SAF_PASS: ${{ secrets.LSA_SAF_PASS }}
+        run: |
+          python -m fire_tracker.frp_update
