@@ -172,8 +172,8 @@
         color: color,
         weight: 2,
         fillColor: color,
-        fillOpacity: 0.25,
-        opacity: 0.8,
+        fillOpacity: 0.4,
+        opacity: 0.85,
       };
     },
     onEachFeature: (feature, layer) => {
@@ -405,18 +405,25 @@
     Object.values(markers).forEach(m => map.removeLayer(m));
     markers = {};
 
-    // Preload sun times for all fires
-    const sunCache = {};
+    // Preload sun times (non-blocking, max 3s timeout)
+    const sunPromises = {};
     for (const f of filtered) {
       const [lon, lat] = f.geometry.coordinates;
       const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
-      if (!sunCache[key]) {
-        sunCache[key] = getSunTimes(lat, lon);
+      if (!sunPromises[key]) {
+        sunPromises[key] = getSunTimes(lat, lon);
       }
     }
-    // Resolve all sun time promises
-    for (const key of Object.keys(sunCache)) {
-      sunCache[key] = await sunCache[key];
+    const sunCache = {};
+    const timeout = new Promise(r => setTimeout(() => r(), 3000));
+    const sunResults = await Promise.race([
+      Promise.all(Object.values(sunPromises).map(p => p.catch(() => undefined))),
+      timeout.then(() => null),
+    ]);
+    if (sunResults) {
+      for (const [i, key] of Object.keys(sunPromises).entries()) {
+        sunCache[key] = sunResults[i];
+      }
     }
 
     for (const f of filtered) {
@@ -427,10 +434,9 @@
       const marker = L.marker([lat, lon], {
         icon: L.divIcon({
           className: '',
-          html: `<svg width="24" height="28" viewBox="0 0 24 28">
+          html: `<svg width="24" height="28" viewBox="0 0 24 28" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3))">
             <polygon points="12,7.68 2,25 22,25" fill="${color}"
-                     stroke="rgba(255,255,255,0.85)" stroke-width="1.5"
-                     filter="drop-shadow(0 1px 2px rgba(0,0,0,0.3))"/>
+                     stroke="rgba(255,255,255,0.85)" stroke-width="1.5"/>
             <path d="M12 8 C9.5 13 8 16 8 19 C8 22 9.8 24 12 24 C14.2 24 16 22 16 19 C16 16 14.5 13 12 8Z"
                   fill="white" opacity="0.9"/>
             <path d="M12 13 C11 15.5 10 17 10 19 C10 20.5 10.9 22 12 22 C13.1 22 14 20.5 14 19 C14 17 13 15.5 12 13Z"
@@ -516,8 +522,8 @@
       fireList.appendChild(li);
     });
 
-    // Re-render perimeters with updated fire associations
-    renderPerimeters();
+    // Re-render perimeters with updated fire associations (if already loaded)
+    if (perimeterData.length) renderPerimeters();
   }
 
   // ── Map click → Nominatim reverse + info popup ─────
@@ -849,8 +855,8 @@
   }
 
   function renderPerimeters() {
-    perimeterLayer.clearLayers();
     if (!perimeterData.length || !fires.length) return;
+    perimeterLayer.clearLayers();
 
     // Build fire list: [{ id, lat, lon, status, name, color }]
     const fireList = fires.map(f => {
@@ -968,7 +974,7 @@
 
   function resetPerimeters() {
     perimeterLayer.eachLayer((layer) => {
-      layer.setStyle({ fillOpacity: 0.25, opacity: 0.8, weight: 2 });
+      layer.setStyle({ fillOpacity: 0.4, opacity: 0.85, weight: 2 });
     });
   }
 
