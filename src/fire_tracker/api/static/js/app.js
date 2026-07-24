@@ -427,9 +427,17 @@
       const marker = L.marker([lat, lon], {
         icon: L.divIcon({
           className: '',
-          html: `<span style="font-size:20px;filter:drop-shadow(0 0 4px ${color})">🔥</span>`,
-          iconSize: [24, 24],
-          iconAnchor: [12, 12],
+          html: `<svg width="24" height="28" viewBox="0 0 24 28">
+            <polygon points="12,2 22,25 2,25" fill="${color}"
+                     stroke="rgba(255,255,255,0.85)" stroke-width="1.5"
+                     filter="drop-shadow(0 1px 2px rgba(0,0,0,0.3))"/>
+            <path d="M12 5 C9.5 10 8 13 8 16 C8 19 9.8 21 12 21 C14.2 21 16 19 16 16 C16 13 14.5 10 12 5Z"
+                  fill="white" opacity="0.9"/>
+            <path d="M12 10 C11 12.5 10 14 10 16 C10 17.5 10.9 19 12 19 C13.1 19 14 17.5 14 16 C14 14 13 12.5 12 10Z"
+                  fill="${color}" opacity="0.4"/>
+          </svg>`,
+          iconSize: [24, 28],
+          iconAnchor: [12, 28],
         }),
       }).addTo(map);
 
