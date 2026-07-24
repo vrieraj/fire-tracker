@@ -16,6 +16,4 @@ RUN pip install --no-cache-dir .
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-EXPOSE ${PORT:-8000}
-
 CMD ["gunicorn", "fire_tracker.api.app:app", "-c", "gunicorn.conf.py"]
