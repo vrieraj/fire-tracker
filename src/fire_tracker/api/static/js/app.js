@@ -371,7 +371,7 @@
       const geojson = await res.json();
       fires = geojson.features || [];
       console.log(`Loaded ${fires.length} fires`);
-      renderFires();
+      await renderFires();
     } catch (e) {
       console.error('Error loading fires:', e);
     }
@@ -379,6 +379,7 @@
 
   // ── Render ─────────────────────────────────────────
   async function renderFires() {
+    try {
     const query = (searchInput?.value || '').toLowerCase().trim();
 
     const filtered = fires.filter(f => {
@@ -488,7 +489,7 @@
 
     if (fireList) {
       fireList.innerHTML = '';
-      filtered.forEach(f => {
+      filtered.forEach((f, idx) => {
         const [lon, lat] = f.geometry.coordinates;
         const p = f.properties;
         const li = document.createElement('li');
@@ -516,6 +517,10 @@
     }
 
     if (perimeterData.length) renderPerimeters();
+    } catch (e) {
+      console.error('renderFires error:', e);
+      if (fireList) fireList.innerHTML = `<li style="padding:16px;color:#e74c3c;font-size:0.85rem">Error: ${e.message}</li>`;
+    }
   }
 
   // ── Map click → Nominatim reverse + info popup ─────
