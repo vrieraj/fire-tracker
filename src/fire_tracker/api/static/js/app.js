@@ -122,6 +122,46 @@
     },
   });
 
+  // AQI layer (loaded dynamically from /api/air-quality)
+  let aqiLayer = L.geoJSON(null, {
+    pointToLayer: (feature, latlng) => {
+      const p = feature.properties;
+      return L.circleMarker(latlng, {
+        radius: 6,
+        fillColor: p.color || '#6f6f6f',
+        color: '#fff',
+        weight: 1,
+        opacity: 0.9,
+        fillOpacity: 0.8,
+      });
+    },
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties;
+      const bandLabel = p.band_name || 'No data';
+      const stationType = p.station_type || '';
+      const areaType = p.area_classification || '';
+      const location = [p.municipality, areaType].filter(Boolean).join(', ');
+      const aqiText = p.aqi ? `AQI: ${p.aqi.toFixed(1)}` : '';
+
+      layer.bindPopup(`
+        <div style="font-family:sans-serif;min-width:180px">
+          <strong>${p.name}</strong><br>
+          <small style="color:#888">${p.code}</small>
+          <hr style="margin:4px 0;border-color:#444">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${p.color}"></span>
+            <span><b>${bandLabel}</b></span>
+          </div>
+          ${aqiText ? `<div style="font-size:0.85rem">${aqiText}</div>` : ''}
+          ${stationType ? `<div style="font-size:0.78rem;color:#888">${stationType}</div>` : ''}
+          ${location ? `<div style="font-size:0.78rem;color:#888">${location}</div>` : ''}
+          <hr style="margin:4px 0;border-color:#444">
+          <a href="https://airindex.eea.europa.eu/AQI/index.html" target="_blank" style="color:#3498db;font-size:0.8rem;text-decoration:none">EEA Air Quality Index ↗</a>
+        </div>
+      `);
+    },
+  });
+
   // Perimeter layer (loaded dynamically from /api/perimeters)
   // Styles are set per-feature based on associated fire status
   perimeterLayer = L.geoJSON(null, {
@@ -188,9 +228,10 @@
   };
 
   const overlayLayers = {
-    '🗺️ Perímetros EFFIS': perimeterLayer,
     '🔥 FRP (LSA SAF)': frpLayer,
+    '🗺️ Perímetros EFFIS': perimeterLayer,
     '📡 Estaciones': stationLayer,
+    '🌬️ Calidad del Aire (EEA)': aqiLayer,
   };
 
   const layerControl = L.control.layers(baseLayers, overlayLayers, { position: 'topright' }).addTo(map);
@@ -910,8 +951,24 @@
     });
   }
 
+  // ── Air Quality (EEA AQI) ──────────────────────────
+  async function loadAQI() {
+    try {
+      const res = await fetch('/api/air-quality');
+      const geojson = await res.json();
+      aqiLayer.clearLayers();
+      if (geojson.features?.length) {
+        aqiLayer.addData(geojson);
+        console.log(`AQI: ${geojson.features.length} stations loaded`);
+      }
+    } catch (e) {
+      console.error('AQI load error:', e);
+    }
+  }
+
   // ── Init ───────────────────────────────────────────
   loadFires();
   loadFRP();
   loadPerimeters();
+  loadAQI();
 })();

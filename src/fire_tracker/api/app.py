@@ -24,6 +24,7 @@ from fire_tracker.weather import geocode, Location
 from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
 from fire_tracker.frp import fetch_frp
 from fire_tracker.metar import fetch_metar_stations
+from fire_tracker.air_quality import fetch_aqi_stations
 
 app = Flask(__name__)
 
@@ -391,6 +392,32 @@ def api_perimeters():
 
     perimeters = _db.get_perimeters()
     return jsonify(perimeters_to_geojson(perimeters))
+
+
+# ── Air Quality (EEA AQI) ────────────────────────────────────────────────
+
+
+@app.route('/api/air-quality')
+def api_air_quality():
+    """
+    Get EEA Air Quality Index stations for ES/PT/FR.
+
+    Returns GeoJSON FeatureCollection with stations colored by AQI band.
+    Data source: European Environment Agency (hourly updates).
+    """
+    try:
+        data = fetch_aqi_stations()
+        # Optional country filter
+        country = request.args.get('country', '').upper()
+        if country in ('ES', 'PT', 'FR'):
+            features = [f for f in data.get('features', [])
+                        if f['properties']['code'].startswith(country)]
+            data['features'] = features
+            data['metadata']['station_count'] = len(features)
+        return jsonify(data)
+    except Exception as e:
+        logger.error('AQI fetch error: %s', e)
+        return jsonify({'error': f'AQI fetch failed: {e}'}), 500
 
 
 # ── Cron endpoints (for cron-job.org) ─────────────────────────────────────
