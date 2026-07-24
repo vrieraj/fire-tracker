@@ -489,8 +489,6 @@
       });
     }
 
-    Object.values(markers).forEach(m => m.bringToFront());
-
     if (fireList) {
       fireList.innerHTML = '';
       filtered.forEach((f, idx) => {
@@ -519,6 +517,10 @@
         fireList.appendChild(li);
       });
     }
+
+    try {
+      Object.values(markers).forEach(m => { if (typeof m.bringToFront === 'function') m.bringToFront(); });
+    } catch (_) {}
 
     if (perimeterData.length) renderPerimeters();
     } catch (e) {
