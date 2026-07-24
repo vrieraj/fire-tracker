@@ -42,18 +42,7 @@ _MIN_CONFIDENCE = 0.5
 # Keep 7 days of data
 _WINDOW_HOURS = 168
 
-# Colors: 7-day gradient gray → pink → red (by age)
-# Oldest (7d) → newest (0h)
-_AGE_COLORS = [
-    '#aaaaaa',  # 7d — gray
-    '#aa8899',  # 5d — gray-pink
-    '#cc6688',  # 3d — rose
-    '#dd4477',  # 2d — deep pink
-    '#ee2255',  # 1d — vivid pink
-    '#ff1133',  # 12h — pink-red
-    '#ff0022',  # 6h — intense red
-    '#ff0000',  # 0h — pure red (newest)
-]
+
 
 
 @dataclass
@@ -181,24 +170,25 @@ def _parse_csv(csv_text: str) -> list[FRPDetection]:
 
 
 def _get_age_color(age_hours: float, frp_mw: float) -> tuple[str, int]:
-    """
-    Get color based on detection age (7-day gradient: gray → red).
-    Also returns opacity as0-255 alpha value for fillOpacity.
-    """
-    # Map age to color index (0=oldest, len-1=newest)
-    max_age = _WINDOW_HOURS  # 168h
-    age_ratio = min(age_hours / max_age, 1.0)  # 1.0 = oldest, 0.0 = newest
-    idx = int((1.0 - age_ratio) * (len(_AGE_COLORS) - 1))  # reversed: newest=last
-    color = _AGE_COLORS[min(idx, len(_AGE_COLORS) - 1)]
-
-    # Size: larger for recent, smaller for old
-    frp_norm = min(frp_mw / 200.0, 1.0)
     if age_hours < 24:
-        size = 5 + int(frp_norm * 5)  # 5-10
-    elif age_hours < 72:
-        size = 4 + int(frp_norm * 4)  # 4-8
+        intensity = min(frp_mw / 200.0, 1.0)
+        g = int(intensity * 255)
+        color = f'#{255:02x}{g:02x}00'
     else:
-        size = 3 + int(frp_norm * 3)  # 3-6
+        age_ratio = min((age_hours - 24) / 144, 1.0)
+        r = 221 - int(age_ratio * 51)
+        g = 68 + int(age_ratio * 102)
+        b = 119 + int(age_ratio * 51)
+        color = f'#{r:02x}{g:02x}{b:02x}'
+
+    if age_hours < 24:
+        size = 6
+    elif age_hours < 48:
+        size = 5
+    elif age_hours < 72:
+        size = 4
+    else:
+        size = 3
 
     return color, size
 

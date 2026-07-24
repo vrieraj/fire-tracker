@@ -127,12 +127,13 @@
     pointToLayer: (feature, latlng) => {
       const p = feature.properties;
       return L.circleMarker(latlng, {
-        radius: 6,
+        radius: 7,
         fillColor: p.color || '#6f6f6f',
         color: '#fff',
-        weight: 1,
+        weight: 3,
         opacity: 0.9,
-        fillOpacity: 0.8,
+        fillOpacity: 0.6,
+        className: 'aqi-marker',
       });
     },
     onEachFeature: (feature, layer) => {
@@ -300,13 +301,25 @@
       link.onclick = (e) => e.stopPropagation();
       effisLabel.appendChild(link);
     }
+
+    // Add EEA link to AQI overlay
+    const aqiLabel = findLabelByText('Calidad del Aire');
+    if (aqiLabel) {
+      const link = document.createElement('a');
+      link.href = 'https://airindex.eea.europa.eu/AQI/index.html';
+      link.target = '_blank';
+      link.textContent = 'EEA';
+      link.className = 'eumetsat-view-link';
+      link.onclick = (e) => e.stopPropagation();
+      aqiLabel.appendChild(link);
+    }
   });
 
   // ── Fire status colors ─────────────────────────────
   const STATUS_COLORS = {
     active: '#e74c3c',
     declarado: '#e74c3c',
-    controlled: '#f39c12',
+    controlled: '#3498db',
     stabilized: '#f1c40f',
     extinguished: '#95a5a6',
     false_alarm: '#7f8c8d',
@@ -411,13 +424,13 @@
       const p = f.properties;
       const color = statusColor(p.status);
 
-      const marker = L.circleMarker([lat, lon], {
-        radius: 7,
-        fillColor: color,
-        color: '#fff',
-        weight: 1.5,
-        opacity: 0.9,
-        fillOpacity: 0.8,
+      const marker = L.marker([lat, lon], {
+        icon: L.divIcon({
+          className: '',
+          html: `<span style="font-size:20px;filter:drop-shadow(0 0 4px ${color})">🔥</span>`,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12],
+        }),
       }).addTo(map);
 
       const areaText = p.area_ha ? `${p.area_ha} ha` : 'N/D';
