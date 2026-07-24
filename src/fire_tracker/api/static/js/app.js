@@ -164,18 +164,15 @@
   });
 
   // Perimeter layer (loaded dynamically from /api/perimeters)
-  // Styles are set per-feature based on associated fire status
+  // All perimeters use the same style; highlighting on click via highlightFirePerimeters()
   perimeterLayer = L.geoJSON(null, {
-    style: (feature) => {
-      const color = feature.properties._fireColor || '#ff4444';
-      return {
-        color: color,
-        weight: 2,
-        fillColor: color,
-        fillOpacity: 0.4,
-        opacity: 0.85,
-      };
-    },
+    style: () => ({
+      color: '#ff4444',
+      weight: 2,
+      fillColor: '#ff4444',
+      fillOpacity: 0.25,
+      opacity: 0.7,
+    }),
     onEachFeature: (feature, layer) => {
       const p = feature.properties;
       let dateStr = p.fire_date || '';
@@ -201,11 +198,11 @@
 
       layer.bindPopup(`
         <div style="font-family:sans-serif;min-width:160px">
-          <strong style="color:${p._fireColor || '#ff4444'}">🔥 Perímetro EFFIS</strong>
+          <strong style="color:#ff4444">🔥 Perímetro EFFIS</strong>
           <hr style="margin:4px 0;border-color:#444">
           <div style="font-size:0.85rem">
             ${fireName ? `<b>Incendio:</b> ${fireName}<br>` : ''}
-            ${fireStatus ? `<b>Estado:</b> ${statusLabel(fireStatus)}<br>` : ''}
+            ${fireStatus ? `<b>Estado:</b> <span style="color:${p._fireColor || '#ccc'}">${statusLabel(fireStatus)}</span><br>` : ''}
             <b>Fecha:</b> ${dateStr}<br>
             <b>Área:</b> ${p.area_ha ? p.area_ha + ' ha' : 'N/D'}<br>
             <b>País:</b> ${p.country || 'N/D'}<br>
@@ -372,8 +369,14 @@
     try {
       const res = await fetch('/api/fires/tracked');
       const geojson = await res.json();
-      fires = geojson.features || [];
-      renderFires();
+      fires = (geojson.features || []).filter(f =>
+        f.geometry && f.geometry.coordinates &&
+        f.geometry.coordinates.length === 2 &&
+        typeof f.geometry.coordinates[0] === 'number' &&
+        typeof f.geometry.coordinates[1] === 'number'
+      );
+      console.log(`Loaded ${fires.length} fires`);
+      await renderFires();
     } catch (e) {
       console.error('Error loading fires:', e);
     }
@@ -381,9 +384,10 @@
 
   // ── Render ─────────────────────────────────────────
   async function renderFires() {
-    const query = searchInput.value.toLowerCase().trim();
+    try {
+      const query = searchInput?.value?.toLowerCase().trim() || '';
 
-    const filtered = fires.filter(f => {
+      const filtered = fires.filter(f => {
       const p = f.properties;
       if (query) {
         const text = [p.municipality, p.province, p.region, p.source_label, p.external_id]
@@ -400,7 +404,7 @@
       return db.localeCompare(da);
     });
 
-    fireCount.textContent = `${filtered.length} incendio${filtered.length !== 1 ? 's' : ''} activo${filtered.length !== 1 ? 's' : ''}`;
+    if (fireCount) fireCount.textContent = `${filtered.length} incendio${filtered.length !== 1 ? 's' : ''} activo${filtered.length !== 1 ? 's' : ''}`;
 
     Object.values(markers).forEach(m => map.removeLayer(m));
     markers = {};
@@ -408,7 +412,10 @@
     // Preload sun times (non-blocking, max 3s timeout)
     const sunPromises = {};
     for (const f of filtered) {
-      const [lon, lat] = f.geometry.coordinates;
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) continue;
+      const [lon, lat] = coords;
+      if (typeof lat !== 'number' || typeof lon !== 'number') continue;
       const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
       if (!sunPromises[key]) {
         sunPromises[key] = getSunTimes(lat, lon);
@@ -427,7 +434,10 @@
     }
 
     for (const f of filtered) {
-      const [lon, lat] = f.geometry.coordinates;
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) continue;
+      const [lon, lat] = coords;
+      if (typeof lat !== 'number' || typeof lon !== 'number') continue;
       const p = f.properties;
       const color = statusColor(p.status);
 
@@ -495,8 +505,11 @@
     Object.values(markers).forEach(m => m.bringToFront());
 
     // Fire list (sorted already)
+    if (!fireList) return;
     fireList.innerHTML = '';
     filtered.forEach(f => {
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) return;
       const p = f.properties;
       const li = document.createElement('li');
       li.className = 'fire-item';
@@ -513,7 +526,9 @@
         </div>
       `;
       li.addEventListener('click', () => {
-        const [lon, lat] = f.geometry.coordinates;
+        const coords = f.geometry?.coordinates;
+        if (!coords || coords.length < 2) return;
+        const [lon, lat] = coords;
         map.setView([lat, lon], 12);
         markers[p.id]?.openPopup();
         document.querySelectorAll('.fire-item').forEach(el => el.classList.remove('active'));
@@ -524,6 +539,10 @@
 
     // Re-render perimeters with updated fire associations (if already loaded)
     if (perimeterData.length) renderPerimeters();
+    } catch (e) {
+      console.error('renderFires error:', e);
+      if (fireList) fireList.innerHTML = `<li style="padding:16px;color:#e74c3c">Error al renderizar incendios</li>`;
+    }
   }
 
   // ── Map click → Nominatim reverse + info popup ─────
@@ -964,17 +983,17 @@
     perimeterLayer.eachLayer((layer) => {
       const fid = layer.feature.properties._fireId;
       if (fid === fireId) {
-        layer.setStyle({ fillOpacity: 0.7, opacity: 1, weight: 3 });
+        layer.setStyle({ fillOpacity: 0.5, opacity: 1, weight: 3, color: '#ffaa00', fillColor: '#ffaa00' });
         layer.bringToFront();
       } else {
-        layer.setStyle({ fillOpacity: 0.08, opacity: 0.2, weight: 1 });
+        layer.setStyle({ fillOpacity: 0.08, opacity: 0.25, weight: 1, color: '#ff4444', fillColor: '#ff4444' });
       }
     });
   }
 
   function resetPerimeters() {
     perimeterLayer.eachLayer((layer) => {
-      layer.setStyle({ fillOpacity: 0.4, opacity: 0.85, weight: 2 });
+      layer.setStyle({ fillOpacity: 0.25, opacity: 0.7, weight: 2, color: '#ff4444', fillColor: '#ff4444' });
     });
   }
 
@@ -994,8 +1013,10 @@
   }
 
   // ── Init ───────────────────────────────────────────
-  loadFires();
   loadFRP();
-  loadPerimeters();
   loadAQI();
+  // Load fires + perimeters in parallel, then render perimeters once both are ready
+  Promise.all([loadFires(), loadPerimeters()]).then(() => {
+    if (perimeterData.length && fires.length) renderPerimeters();
+  });
 })();
