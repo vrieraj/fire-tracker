@@ -101,7 +101,7 @@ class FireScraper(ABC):
         if r in ('estabilizado', 'estabilitzat', 'stabilized'):
             return 'stabilized'
         if r in ('extinguido', 'extingit', 'eteint', 'extinguished',
-                 'cloture', 'cerrada', 'conclusao'):
+                 'cloture', 'cerrada', 'conclusao', 'resolvido', 'concluído'):
             return 'extinguished'
         if r in ('falsa_alarma', 'fausse_alerte', 'falso_alerta',
                  'anulado', 'douteux'):

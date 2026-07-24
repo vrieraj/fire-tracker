@@ -48,6 +48,19 @@ def _extract_if_hashtag(text: str) -> str | None:
     return None
 
 
+def _haversine(lat1, lon1, lat2, lon2) -> float:
+    import math
+    if None in (lat1, lon1, lat2, lon2):
+        return float('inf')
+    R = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a_val = (math.sin(dphi / 2) ** 2
+             + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a_val), math.sqrt(1 - a_val))
+
+
 def _is_duplicate(db: FireDatabase, tweet: XTweet, location: FireLocation) -> bool:
     existing = db.get_fire("xmonitor", f"x_{tweet.tweet_id}")
     if existing:
@@ -55,8 +68,12 @@ def _is_duplicate(db: FireDatabase, tweet: XTweet, location: FireLocation) -> bo
 
     fires = db.get_active_fires()
     for f in fires:
-        if f.get('municipality') and f['municipality'] == location.municipality:
-            return True
+        f_lat = f.get('latitude')
+        f_lon = f.get('longitude')
+        if f_lat is not None and f_lon is not None:
+            dist = _haversine(location.latitude, location.longitude, f_lat, f_lon)
+            if dist < 500:
+                return True
 
     return False
 
@@ -205,7 +222,7 @@ def main():
         limit_per_query=args.limit,
     )
 
-    print(f"\n--- Monitor Results ---")
+    print("\n--- Monitor Results ---")
     print(f" tweets found:    {stats['tweets_found']}")
     print(f" new fires:       {stats['new_fires']}")
     print(f" duplicates:      {stats['duplicates']}")

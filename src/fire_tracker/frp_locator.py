@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from fire_tracker.database import FireDatabase
-from fire_tracker.weather import geocode, Location
+from fire_tracker.weather import geocode, reverse_geocode
 
 logger = logging.getLogger(__name__)
 
@@ -127,23 +126,13 @@ def locate_fire(
         region = loc.region or ""
         country = loc.country or "ES"
     else:
-        # Reverse geocode to get location name
-        from fire_tracker.api.app import reverse_geocode
-        # We can't import from app.py directly, use nominatim
-        import requests as _req
-        try:
-            r = _req.get(
-                f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json",
-                headers={"User-Agent": "FireTracker/1.0"},
-                timeout=10,
-            )
-            data = r.json()
-            addr = data.get('address', {})
-            municipality = municipality or addr.get('city', addr.get('town', addr.get('village', '')))
-            province = province or addr.get('state', addr.get('county', ''))
-            region = addr.get('autonomous_community', '')
-            country = addr.get('country_code', 'ES')
-        except Exception:
+        loc = reverse_geocode(lat, lon)
+        if loc:
+            municipality = municipality or loc.name
+            province = province or loc.region
+            region = loc.region
+            country = loc.country
+        else:
             region = ""
             country = "ES"
 

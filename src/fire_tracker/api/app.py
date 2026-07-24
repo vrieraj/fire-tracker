@@ -20,7 +20,7 @@ if str(_root / 'src') not in sys.path:
 
 from fire_tracker.database import FireDatabase
 from fire_tracker.orchestrator import FireOrchestrator
-from fire_tracker.weather import geocode, Location
+from fire_tracker.weather import geocode
 from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
 from fire_tracker.frp import fetch_frp
 from fire_tracker.metar import fetch_metar_stations
@@ -286,7 +286,7 @@ def api_frp():
     Returns GeoJSON FeatureCollection.
     """
     from fire_tracker.frp import _get_age_color, _BBOX, _WINDOW_HOURS
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone
 
     # Purge old detections first
     _db.purge_frp_detections(hours=_WINDOW_HOURS)
@@ -428,7 +428,7 @@ def ping():
     return jsonify({"status": "ok"})
 
 
-@app.route('/api/cron/run', methods=['GET', 'POST'])
+@app.route('/api/cron/run', methods=['POST'])
 def cron_run():
     stats = {}
     try:
@@ -444,7 +444,7 @@ def cron_run():
     return jsonify(stats)
 
 
-@app.route('/api/cron/scrapers', methods=['GET', 'POST'])
+@app.route('/api/cron/scrapers', methods=['POST'])
 def cron_scrapers():
     import threading
     result = [{'stats': None, 'done': False}]
@@ -463,14 +463,14 @@ def cron_scrapers():
     return jsonify({'status': 'running', 'message': 'scrapers started in background'})
 
 
-@app.route('/api/cron/monitor', methods=['GET', 'POST'])
+@app.route('/api/cron/monitor', methods=['POST'])
 def cron_monitor():
     from fire_tracker.monitor import run_monitor
     stats = run_monitor()
     return jsonify(stats)
 
 
-@app.route('/api/cron/stations', methods=['GET', 'POST'])
+@app.route('/api/cron/stations', methods=['POST'])
 def cron_stations():
     return jsonify({"status": "ok", "message": "station cache cleanup (no-op)"})
 

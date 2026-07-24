@@ -41,9 +41,6 @@ class FireDatabase:
             conn.execute('PRAGMA foreign_keys=ON')
             return conn
 
-    def _q(self, param_char: str = '?') -> str:
-        return param_char
-
     def _init_pg(self):
         _DDL = [
             '''CREATE TABLE IF NOT EXISTS fires (
@@ -106,15 +103,17 @@ class FireDatabase:
             )''',
             'CREATE INDEX IF NOT EXISTS idx_perimeters_country ON effis_perimeters(country)',
         ]
-        for ddl in _DDL:
-            conn = self._connect()
-            try:
-                conn.autocommit = True
-                conn.cursor().execute(ddl)
-            except Exception as e:
-                logger.warning('DDL skipped: %s — %s', ddl[:60].strip(), e)
-            finally:
-                conn.close()
+        conn = self._connect()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            for ddl in _DDL:
+                try:
+                    cur.execute(ddl)
+                except Exception as e:
+                    logger.warning('DDL skipped: %s — %s', ddl[:60].strip(), e)
+        finally:
+            conn.close()
 
     def _init_sqlite(self):
         with self._connect() as conn:
@@ -315,7 +314,7 @@ class FireDatabase:
             rows = cur.fetchall()
             if self._is_pg:
                 cols = [d[0] for d in cur.description]
-                return [self._pg_row_to_dict(dict(zip(cols, r)), r) for r in rows]
+                return [self._pg_row_to_dict(dict(zip(cols, r))) for r in rows]
             return [self._row_to_dict(r) for r in rows]
         finally:
             if self._is_pg:
@@ -326,11 +325,11 @@ class FireDatabase:
         conn = self._connect()
         try:
             cur = conn.cursor()
-            cur.execute(f'SELECT * FROM fires ORDER BY last_updated DESC {ph} OFFSET {ph}', (limit, offset))
+            cur.execute(f'SELECT * FROM fires ORDER BY last_updated DESC LIMIT {ph} OFFSET {ph}', (limit, offset))
             rows = cur.fetchall()
             if self._is_pg:
                 cols = [d[0] for d in cur.description]
-                return [self._pg_row_to_dict(dict(zip(cols, r)), r) for r in rows]
+                return [self._pg_row_to_dict(dict(zip(cols, r))) for r in rows]
             return [self._row_to_dict(r) for r in rows]
         finally:
             if self._is_pg:
@@ -347,7 +346,7 @@ class FireDatabase:
                 return None
             if self._is_pg:
                 cols = [d[0] for d in cur.description]
-                return self._pg_row_to_dict(dict(zip(cols, row)), row)
+                return self._pg_row_to_dict(dict(zip(cols, row)))
             return self._row_to_dict(row)
         finally:
             if self._is_pg:
@@ -449,7 +448,7 @@ class FireDatabase:
         return d
 
     @staticmethod
-    def _pg_row_to_dict(row: dict, raw_tuple) -> dict:
+    def _pg_row_to_dict(row: dict) -> dict:
         for key in ('resources', 'raw_data'):
             if row.get(key):
                 try:
@@ -621,7 +620,7 @@ class FireDatabase:
         lon_min: float,
         lon_max: float,
         hours: int = 24,
-        min_confidence: float = 0.3,
+        min_confidence: float = 0.5,
     ) -> list[dict]:
         """Get FRP detections within a bounding box."""
         if self._is_pg:

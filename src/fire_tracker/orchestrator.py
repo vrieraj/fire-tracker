@@ -156,8 +156,8 @@ def run_orchestrator():
     )
     orch = FireOrchestrator()
     stats = orch.run()
-    print(f'\nSummary:')
-    print(f'  Sources:')
+    print('\nSummary:')
+    print('  Sources:')
     for src, count in stats['sources'].items():
         print(f'    {src}: {count} incidents')
     print(f'  Total raw: {stats["total_raw"]}')

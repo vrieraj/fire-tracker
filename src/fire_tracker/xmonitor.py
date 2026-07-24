@@ -14,7 +14,6 @@ Setup:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -22,7 +21,6 @@ import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -385,7 +383,6 @@ async def _search_x_com_page(page, query: str, hours_back: int = 2) -> list[XTwe
         return tweets
 
     # Parse captured API responses
-    cutoff = datetime.now(timezone.utc).timestamp() - (hours_back * 3600)
     for resp_data in captured_responses:
         _extract_tweets_from_response(resp_data, tweets, hours_back)
 

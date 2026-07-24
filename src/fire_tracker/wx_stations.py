@@ -18,7 +18,6 @@ import calendar
 import math
 import os
 import time
-from typing import Any
 
 import pandas as pd
 import requests

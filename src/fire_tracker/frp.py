@@ -204,8 +204,15 @@ def fetch_frp() -> dict:
 
     now = datetime.now(timezone.utc)
 
-    # Collect CSVs from last 24h — concurrent directory listings
-    dates_to_check = [now - timedelta(hours=h) for h in range(_WINDOW_HOURS + 1)]
+    # Collect unique calendar days in the window (directory listing is per-day)
+    seen_dates = set()
+    dates_to_check = []
+    for h in range(0, _WINDOW_HOURS + 1, 6):
+        d = now - timedelta(hours=h)
+        key = (d.year, d.month, d.day)
+        if key not in seen_dates:
+            seen_dates.add(key)
+            dates_to_check.append(d)
     csv_urls = []
     _dir_errors = 0
 

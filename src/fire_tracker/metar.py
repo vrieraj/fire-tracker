@@ -13,7 +13,6 @@ Output format matches WU PWS station dicts for consistent frontend rendering.
 from __future__ import annotations
 
 import time
-from typing import Any
 
 import requests
 

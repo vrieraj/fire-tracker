@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fire_tracker.scrapers.base import FireIncident, FireScraper
 

@@ -11,8 +11,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -95,7 +93,7 @@ def run_frp_update(hours: int = 3) -> dict:
 
 def main():
     stats = run_frp_update()
-    print(f"\n--- FRP Update ---")
+    print("\n--- FRP Update ---")
     print(f"  Fetched:     {stats['detections_fetched']}")
     print(f"  Inserted:    {stats['inserted']}")
     print(f"  Deleted (>7d): {stats['deleted']}")
