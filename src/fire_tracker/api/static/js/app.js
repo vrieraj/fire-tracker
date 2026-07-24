@@ -378,7 +378,9 @@
   }
 
   // ── Render ─────────────────────────────────────────
+  let renderGen = 0;
   async function renderFires() {
+    const gen = ++renderGen;
     try {
     const query = (searchInput?.value || '').toLowerCase().trim();
 
@@ -420,6 +422,8 @@
         if (sunResults[i]) sunCache[key] = sunResults[i];
       }
     }
+
+    if (gen !== renderGen) return;
 
     for (const f of filtered) {
       const [lon, lat] = f.geometry.coordinates;
@@ -845,7 +849,6 @@
       const geojson = await res.json();
       perimeterData = geojson.features || [];
       console.log(`EFFIS: ${perimeterData.length} perimeters fetched`);
-      if (fires.length) renderPerimeters();
     } catch (e) {
       console.error('Perimeters load error:', e);
     }
@@ -993,6 +996,7 @@
   // ── Init ───────────────────────────────────────────
   loadFRP();
   loadAQI();
-  loadFires();
-  loadPerimeters();
+  Promise.all([loadFires(), loadPerimeters()]).then(() => {
+    if (fires.length && perimeterData.length) renderPerimeters();
+  });
 })();
