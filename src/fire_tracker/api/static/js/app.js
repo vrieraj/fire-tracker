@@ -369,14 +369,9 @@
     try {
       const res = await fetch('/api/fires/tracked');
       const geojson = await res.json();
-      fires = (geojson.features || []).filter(f =>
-        f.geometry && f.geometry.coordinates &&
-        f.geometry.coordinates.length === 2 &&
-        typeof f.geometry.coordinates[0] === 'number' &&
-        typeof f.geometry.coordinates[1] === 'number'
-      );
+      fires = geojson.features || [];
       console.log(`Loaded ${fires.length} fires`);
-      await renderFires();
+      renderFires();
     } catch (e) {
       console.error('Error loading fires:', e);
     }
@@ -384,10 +379,9 @@
 
   // ── Render ─────────────────────────────────────────
   async function renderFires() {
-    try {
-      const query = searchInput?.value?.toLowerCase().trim() || '';
+    const query = (searchInput?.value || '').toLowerCase().trim();
 
-      const filtered = fires.filter(f => {
+    const filtered = fires.filter(f => {
       const p = f.properties;
       if (query) {
         const text = [p.municipality, p.province, p.region, p.source_label, p.external_id]
@@ -397,7 +391,6 @@
       return true;
     });
 
-    // Sort: most recent first
     filtered.sort((a, b) => {
       const da = a.properties.detection_date || '';
       const db = b.properties.detection_date || '';
@@ -409,35 +402,26 @@
     Object.values(markers).forEach(m => map.removeLayer(m));
     markers = {};
 
-    // Preload sun times (non-blocking, max 3s timeout)
     const sunPromises = {};
     for (const f of filtered) {
-      const coords = f.geometry?.coordinates;
-      if (!coords || coords.length < 2) continue;
-      const [lon, lat] = coords;
-      if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+      const [lon, lat] = f.geometry.coordinates;
       const key = `${lat.toFixed(3)},${lon.toFixed(3)}`;
-      if (!sunPromises[key]) {
-        sunPromises[key] = getSunTimes(lat, lon);
-      }
+      if (!sunPromises[key]) sunPromises[key] = getSunTimes(lat, lon);
     }
     const sunCache = {};
     const timeout = new Promise(r => setTimeout(() => r(), 3000));
     const sunResults = await Promise.race([
-      Promise.all(Object.values(sunPromises).map(p => p.catch(() => undefined))),
+      Promise.all(Object.values(sunPromises).map(p => p.catch(() => null))),
       timeout.then(() => null),
     ]);
     if (sunResults) {
       for (const [i, key] of Object.keys(sunPromises).entries()) {
-        sunCache[key] = sunResults[i];
+        if (sunResults[i]) sunCache[key] = sunResults[i];
       }
     }
 
     for (const f of filtered) {
-      const coords = f.geometry?.coordinates;
-      if (!coords || coords.length < 2) continue;
-      const [lon, lat] = coords;
-      if (typeof lat !== 'number' || typeof lon !== 'number') continue;
+      const [lon, lat] = f.geometry.coordinates;
       const p = f.properties;
       const color = statusColor(p.status);
 
@@ -495,56 +479,43 @@
       marker.fireId = p.id;
       markers[p.id] = marker;
 
-      // Highlight only this fire's perimeters on marker click
       marker.on('click', () => {
         highlightFirePerimeters(p.id);
       });
     }
 
-    // Ensure fire markers are on top of all layers
     Object.values(markers).forEach(m => m.bringToFront());
 
-    // Fire list (sorted already)
-    if (!fireList) return;
-    fireList.innerHTML = '';
-    filtered.forEach(f => {
-      const coords = f.geometry?.coordinates;
-      if (!coords || coords.length < 2) return;
-      const p = f.properties;
-      const li = document.createElement('li');
-      li.className = 'fire-item';
-      const color = statusColor(p.status);
-      const statusLbl = statusLabel(p.status);
-      const areaText = p.area_ha ? `<span class="fire-area">${p.area_ha} ha</span>` : '';
-      const dateText = p.detection_date ? `<span class="fire-date">${p.detection_date.split('T')[0]}</span>` : '';
-      li.innerHTML = `
-        <div class="fire-name">${p.municipality || p.external_id}</div>
-        <div class="fire-meta">${p.province ? p.province + ', ' : ''}${p.region || ''}</div>
-        <div class="fire-tags">
-          <span class="fire-status" style="background:${color}">${statusLbl}</span>
-          <span class="fire-source">${p.source_label}</span>${areaText}${dateText}
-        </div>
-      `;
-      li.addEventListener('click', () => {
-        const coords = f.geometry?.coordinates;
-        if (!coords || coords.length < 2) return;
-        const [lon, lat] = coords;
-        map.setView([lat, lon], 12);
-        markers[p.id]?.openPopup();
-        document.querySelectorAll('.fire-item').forEach(el => el.classList.remove('active'));
-        li.classList.add('active');
+    if (fireList) {
+      fireList.innerHTML = '';
+      filtered.forEach(f => {
+        const [lon, lat] = f.geometry.coordinates;
+        const p = f.properties;
+        const li = document.createElement('li');
+        li.className = 'fire-item';
+        const color = statusColor(p.status);
+        const statusLbl = statusLabel(p.status);
+        const areaText = p.area_ha ? `<span class="fire-area">${p.area_ha} ha</span>` : '';
+        const dateText = p.detection_date ? `<span class="fire-date">${p.detection_date.split('T')[0]}</span>` : '';
+        li.innerHTML = `
+          <div class="fire-name">${p.municipality || p.external_id}</div>
+          <div class="fire-meta">${p.province ? p.province + ', ' : ''}${p.region || ''}</div>
+          <div class="fire-tags">
+            <span class="fire-status" style="background:${color}">${statusLbl}</span>
+            <span class="fire-source">${p.source_label}</span>${areaText}${dateText}
+          </div>
+        `;
+        li.addEventListener('click', () => {
+          map.setView([lat, lon], 12);
+          markers[p.id]?.openPopup();
+          document.querySelectorAll('.fire-item').forEach(el => el.classList.remove('active'));
+          li.classList.add('active');
+        });
+        fireList.appendChild(li);
       });
-      fireList.appendChild(li);
-    });
+    }
 
-    // Re-render perimeters with updated fire associations (if already loaded)
-    if (perimeterData.length) {
-      try { renderPerimeters(); } catch (pe) { console.error('Perimeter render error:', pe); }
-    }
-    } catch (e) {
-      console.error('renderFires error:', e.message, e.stack, 'fires:', fires?.length, 'filtered:', filtered?.length);
-      if (fireList) fireList.innerHTML = `<li style="padding:16px;color:#e74c3c">Error: ${e.message || e}</li>`;
-    }
+    if (perimeterData.length) renderPerimeters();
   }
 
   // ── Map click → Nominatim reverse + info popup ─────
@@ -1017,8 +988,6 @@
   // ── Init ───────────────────────────────────────────
   loadFRP();
   loadAQI();
-  // Load fires + perimeters in parallel, then render perimeters once both are ready
-  Promise.all([loadFires(), loadPerimeters()]).then(() => {
-    if (perimeterData.length && fires.length) renderPerimeters();
-  });
+  loadFires();
+  loadPerimeters();
 })();
