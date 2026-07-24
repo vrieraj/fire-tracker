@@ -428,12 +428,12 @@
         icon: L.divIcon({
           className: '',
           html: `<svg width="24" height="28" viewBox="0 0 24 28">
-            <polygon points="12,2 22,25 2,25" fill="${color}"
+            <polygon points="12,7.68 2,25 22,25" fill="${color}"
                      stroke="rgba(255,255,255,0.85)" stroke-width="1.5"
                      filter="drop-shadow(0 1px 2px rgba(0,0,0,0.3))"/>
-            <path d="M12 5 C9.5 10 8 13 8 16 C8 19 9.8 21 12 21 C14.2 21 16 19 16 16 C16 13 14.5 10 12 5Z"
+            <path d="M12 8 C9.5 13 8 16 8 19 C8 22 9.8 24 12 24 C14.2 24 16 22 16 19 C16 16 14.5 13 12 8Z"
                   fill="white" opacity="0.9"/>
-            <path d="M12 10 C11 12.5 10 14 10 16 C10 17.5 10.9 19 12 19 C13.1 19 14 17.5 14 16 C14 14 13 12.5 12 10Z"
+            <path d="M12 13 C11 15.5 10 17 10 19 C10 20.5 10.9 22 12 22 C13.1 22 14 20.5 14 19 C14 17 13 15.5 12 13Z"
                   fill="${color}" opacity="0.4"/>
           </svg>`,
           iconSize: [24, 28],
