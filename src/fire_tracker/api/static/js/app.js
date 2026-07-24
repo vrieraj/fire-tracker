@@ -538,10 +538,12 @@
     });
 
     // Re-render perimeters with updated fire associations (if already loaded)
-    if (perimeterData.length) renderPerimeters();
+    if (perimeterData.length) {
+      try { renderPerimeters(); } catch (pe) { console.error('Perimeter render error:', pe); }
+    }
     } catch (e) {
-      console.error('renderFires error:', e);
-      if (fireList) fireList.innerHTML = `<li style="padding:16px;color:#e74c3c">Error al renderizar incendios</li>`;
+      console.error('renderFires error:', e.message, e.stack, 'fires:', fires?.length, 'filtered:', filtered?.length);
+      if (fireList) fireList.innerHTML = `<li style="padding:16px;color:#e74c3c">Error: ${e.message || e}</li>`;
     }
   }
 
@@ -867,7 +869,7 @@
       const geojson = await res.json();
       perimeterData = geojson.features || [];
       console.log(`EFFIS: ${perimeterData.length} perimeters fetched`);
-      renderPerimeters();
+      if (fires.length) renderPerimeters();
     } catch (e) {
       console.error('Perimeters load error:', e);
     }
