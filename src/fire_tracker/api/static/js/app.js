@@ -423,7 +423,6 @@
       const geojson = await res.json();
       fires = geojson.features || [];
       console.log(`Loaded ${fires.length} fires`);
-      setStatus(`${fires.length} incendios en seguimiento`, 'ok');
       await renderFires();
     } catch (e) {
       console.error('Error loading fires:', e);
@@ -462,7 +461,7 @@
       return db.localeCompare(da);
     });
 
-    if (fireCount) fireCount.textContent = `${filtered.length} incendio${filtered.length !== 1 ? 's' : ''} activo${filtered.length !== 1 ? 's' : ''}`;
+    if (fireCount) fireCount.textContent = `${filtered.length} incendio${filtered.length !== 1 ? 's' : ''} en seguimiento`;
 
     Object.values(markers).forEach(m => map.removeLayer(m));
     markers = {};
@@ -495,16 +494,16 @@
       const marker = L.marker([lat, lon], {
         icon: L.divIcon({
           className: '',
-          html: `<svg width="24" height="28" viewBox="0 0 24 28" style="filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3))">
-            <polygon points="12,7.68 2,25 22,25" fill="${color}"
-                     stroke="rgba(255,255,255,0.85)" stroke-width="1.5"/>
-            <path d="M12 8 C9.5 13 8 16 8 19 C8 22 9.8 24 12 24 C14.2 24 16 22 16 19 C16 16 14.5 13 12 8Z"
-                  fill="white" opacity="0.9"/>
-            <path d="M12 13 C11 15.5 10 17 10 19 C10 20.5 10.9 22 12 22 C13.1 22 14 20.5 14 19 C14 17 13 15.5 12 13Z"
-                  fill="${color}" opacity="0.4"/>
+          html: `<svg width="32" height="36" viewBox="0 0 32 36" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35))">
+            <polygon points="16,5 1,31 31,31" fill="${color}"
+                     stroke="rgba(255,255,255,0.95)" stroke-width="2" stroke-linejoin="round"/>
+            <path d="M16 10 C12.4 14.7 10.2 18 10.2 21.3 C10.2 25 12.8 27.6 16 27.6 C19.2 27.6 21.8 25 21.8 21.3 C21.8 18 19.6 14.7 16 10 Z"
+                  fill="white"/>
+            <path d="M16 14.6 C14.2 17.4 13.3 19.3 13.3 21.5 C13.3 23.8 14.5 25.3 16 25.3 C17.5 25.3 18.7 23.8 18.7 21.5 C18.7 19.3 17.8 17.4 16 14.6 Z"
+                  fill="${color}"/>
           </svg>`,
-          iconSize: [24, 28],
-          iconAnchor: [12, 28],
+          iconSize: [32, 36],
+          iconAnchor: [16, 36],
         }),
       }).addTo(map);
 
