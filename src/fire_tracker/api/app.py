@@ -25,6 +25,7 @@ from fire_tracker.wx_stations import fetch_wu_stations_near, get_wu_api_key
 from fire_tracker.frp import fetch_frp
 from fire_tracker.metar import fetch_metar_stations
 from fire_tracker.air_quality import fetch_aqi_stations
+from fire_tracker.dgt_traffic import fetch_dgt_traffic
 
 app = Flask(__name__)
 
@@ -428,6 +429,21 @@ def api_air_quality():
     except Exception as e:
         logger.error('AQI fetch error: %s', e)
         return jsonify({'error': f'AQI fetch failed: {e}'}), 500
+
+
+@app.route('/api/traffic-incidents')
+def api_traffic_incidents():
+    """
+    Get DGT eTraffic road incidents related to wildfires (Incendios campaign).
+
+    Returns GeoJSON FeatureCollection with LineString geometries of the
+    affected road stretches, colored by incident subtype.
+    """
+    try:
+        return jsonify(fetch_dgt_traffic())
+    except Exception as e:
+        logger.error('eTraffic fetch error: %s', e)
+        return jsonify({'error': f'eTraffic fetch failed: {e}'}), 500
 
 
 # ── Cron endpoints (for cron-job.org) ─────────────────────────────────────

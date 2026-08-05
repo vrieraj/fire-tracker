@@ -244,6 +244,45 @@
     },
   });
 
+  // Traffic layer (loaded dynamically from /api/traffic-incidents)
+  const TRAFFIC_STYLES = {
+    'Carretera cortada': { color: '#e74c3c', weight: 6 },
+    'Carril cortado': { color: '#f39c12', weight: 5 },
+    'Sentido cortado': { color: '#f39c12', weight: 5 },
+    'Transitable con precaución': { color: '#3498db', weight: 4 },
+  };
+  let trafficLayer = L.geoJSON(null, {
+    style: (feature) => {
+      const s = TRAFFIC_STYLES[feature.properties.subtipo] || { color: '#95a5a6', weight: 3 };
+      return { ...s, opacity: 0.9 };
+    },
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties;
+      let fromTo = '';
+      if (p.municipio) {
+        fromTo = p.municipio;
+        if (p.municipio_fin && p.municipio_fin !== p.municipio) {
+          fromTo += ' → ' + p.municipio_fin;
+        }
+      }
+      layer.bindPopup(`
+        <div style="font-family:sans-serif;min-width:180px">
+          <strong>🚧 ${p.subtipo}</strong><br>
+          <small style="color:#888">${p.causa}${p.subcausa ? ' · ' + p.subcausa : ''}</small>
+          <hr style="margin:4px 0;border-color:#444">
+          <div style="font-size:0.85rem">
+            <b>${p.carretera}</b>${p.sentido ? ' (' + p.sentido + ')' : ''}<br>
+            ${p.pk ? 'PK: ' + p.pk + '<br>' : ''}
+            ${fromTo ? fromTo + '<br>' : ''}
+            ${p.provincia ? p.provincia + '<br>' : ''}
+            ${p.fecha_inicio ? 'Desde: ' + p.fecha_inicio.replace('T', ' ') + '<br>' : ''}
+            <a href="https://etraffic.dgt.es/etrafficWEB/?campanya=Incendios" target="_blank" style="color:#3498db;text-decoration:none">eTraffic DGT ↗</a>
+          </div>
+        </div>
+      `);
+    },
+  });
+
   // Build layer control
   const baseLayers = {
     'OSM Callejero': layers.street,
@@ -261,6 +300,7 @@
     '🗺️ Perímetros EFFIS': perimeterLayer,
     '📡 Estaciones': stationLayer,
     '🌬️ Calidad del Aire (EEA)': aqiLayer,
+    '🚧 Carreteras cortadas (DGT)': trafficLayer,
   };
 
   const layerControl = L.control.layers(baseLayers, overlayLayers, { position: 'topright' }).addTo(map);
@@ -340,6 +380,18 @@
       link.className = 'eumetsat-view-link';
       link.onclick = (e) => e.stopPropagation();
       aqiLabel.appendChild(link);
+    }
+
+    // Add eTraffic link to road closures overlay
+    const trafficLabel = findLabelByText('Carreteras cortadas');
+    if (trafficLabel) {
+      const link = document.createElement('a');
+      link.href = 'https://etraffic.dgt.es/etrafficWEB/?campanya=Incendios';
+      link.target = '_blank';
+      link.textContent = 'eTraffic';
+      link.className = 'eumetsat-view-link';
+      link.onclick = (e) => e.stopPropagation();
+      trafficLabel.appendChild(link);
     }
   });
 
@@ -886,7 +938,7 @@
   async function refreshAll() {
     if (btnRefresh) btnRefresh.classList.add('loading');
     setStatus('Actualizando datos...', '');
-    await Promise.allSettled([loadFires(), loadPerimeters(), loadFRP(), loadAQI()]);
+    await Promise.allSettled([loadFires(), loadPerimeters(), loadFRP(), loadAQI(), loadTraffic()]);
     if (btnRefresh) btnRefresh.classList.remove('loading');
     showToast('Datos actualizados', 'ok');
   }
@@ -1080,9 +1132,27 @@
     }
   }
 
+  // ── Road closures (DGT eTraffic) ───────────────────
+  async function loadTraffic() {
+    try {
+      const res = await fetch('/api/traffic-incidents');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const geojson = await res.json();
+      trafficLayer.clearLayers();
+      if (geojson.features?.length) {
+        trafficLayer.addData(geojson);
+        console.log(`eTraffic: ${geojson.features.length} road incidents loaded`);
+      }
+    } catch (e) {
+      console.error('eTraffic load error:', e);
+      showToast('Error al cargar carreteras cortadas', 'error');
+    }
+  }
+
   // ── Init ───────────────────────────────────────────
   loadFRP();
   loadAQI();
+  loadTraffic();
   Promise.all([loadFires(), loadPerimeters()]).then(() => {
     if (fires.length && perimeterData.length) renderPerimeters();
   });
