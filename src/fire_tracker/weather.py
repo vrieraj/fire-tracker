@@ -39,8 +39,37 @@ class Location:
     latitude: float
     longitude: float
     elevation: float = 0.0
+    municipality: str = ''
+    province: str = ''
     region: str = ''
     country: str = ''
+
+
+def _short_name(addr: dict) -> str:
+    """Best-effort short place name from a Nominatim address block."""
+    for key in ('municipality', 'town', 'city', 'village', 'hamlet', 'locality'):
+        value = addr.get(key)
+        if value:
+            return value
+    return ''
+
+
+def _province(addr: dict) -> str:
+    """Province/state-district from a Nominatim address block."""
+    for key in ('province', 'state_district'):
+        value = addr.get(key)
+        if value:
+            return value
+    return addr.get('county', '')
+
+
+def _region(addr: dict) -> str:
+    """Region/autonomous community from a Nominatim address block."""
+    for key in ('state', 'region'):
+        value = addr.get(key)
+        if value:
+            return value
+    return addr.get('county', '')
 
 
 def geocode(query: str) -> Location | None:
@@ -49,7 +78,7 @@ def geocode(query: str) -> Location | None:
     try:
         resp = requests.get(
             _NOMINATIM_URL,
-            params={'q': query, 'format': 'json', 'limit': 1},
+            params={'q': query, 'format': 'jsonv2', 'limit': 1, 'addressdetails': 1},
             headers={'User-Agent': _UA},
             timeout=_TIMEOUT,
         )
@@ -65,14 +94,18 @@ def geocode(query: str) -> Location | None:
     r = results[0]
     lat, lon = float(r['lat']), float(r['lon'])
     elevation = get_elevation(lat, lon)
+    addr = r.get('address', {}) or {}
+    name = _short_name(addr) or r.get('display_name', query)
 
     return Location(
-        name=r.get('display_name', query),
+        name=name,
         latitude=lat,
         longitude=lon,
         elevation=elevation,
-        region=r.get('address', {}).get('state', ''),
-        country=r.get('address', {}).get('country', ''),
+        municipality=name,
+        province=_province(addr),
+        region=_region(addr),
+        country=addr.get('country_code', '').upper(),
     )
 
 
@@ -82,7 +115,7 @@ def reverse_geocode(latitude: float, longitude: float) -> Location | None:
     try:
         resp = requests.get(
             _NOMINATIM_REVERSE_URL,
-            params={'lat': latitude, 'lon': longitude, 'format': 'json'},
+            params={'lat': latitude, 'lon': longitude, 'format': 'jsonv2'},
             headers={'User-Agent': _UA},
             timeout=_TIMEOUT,
         )
@@ -92,14 +125,18 @@ def reverse_geocode(latitude: float, longitude: float) -> Location | None:
         logger.error('Reverse geocoding error: %s', e)
         return None
 
-    addr = data.get('address', {})
+    addr = data.get('address', {}) or {}
+    name = _short_name(addr) or data.get('display_name', '')
+
     return Location(
-        name=data.get('display_name', ''),
+        name=name,
         latitude=latitude,
         longitude=longitude,
         elevation=get_elevation(latitude, longitude),
-        region=addr.get('state', addr.get('county', '')),
-        country=addr.get('country_code', 'ES'),
+        municipality=name,
+        province=_province(addr),
+        region=_region(addr),
+        country=addr.get('country_code', '').upper(),
     )
 
 

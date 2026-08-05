@@ -203,11 +203,17 @@ def api_geocode():
         'results': [
             {
                 'name': loc.name,
+                'display_name': ', '.join(
+                    p for p in [loc.name, loc.province, loc.region, loc.country] if p
+                ),
+                'municipality': loc.municipality,
+                'province': loc.province,
+                'admin1': loc.province,
+                'region': loc.region,
+                'country': loc.country,
                 'latitude': loc.latitude,
                 'longitude': loc.longitude,
                 'elevation': loc.elevation,
-                'country': loc.country,
-                'region': loc.region,
             }
         ]
     })

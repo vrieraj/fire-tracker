@@ -48,11 +48,19 @@ def run_perimeter_update() -> dict:
     existing_ids = db.get_perimeter_ids()
     new_ids = {p['id'] for p in perimeters}
 
-    # Delete perimeters no longer in the download
+    # Delete perimeters no longer in the download.
+    # Safety: only prune when the new set is not suspiciously incomplete
+    # (a partial/failed download would otherwise wipe valid perimeters).
     deleted = 0
-    for old_id in existing_ids - new_ids:
-        db.delete_perimeter(old_id)
-        deleted += 1
+    if existing_ids and len(new_ids) < len(existing_ids) * 0.5:
+        logger.warning(
+            'EFFIS: skipping prune — new set covers only %d/%d existing IDs',
+            len(new_ids), len(existing_ids),
+        )
+    else:
+        for old_id in existing_ids - new_ids:
+            db.delete_perimeter(old_id)
+            deleted += 1
 
     # Upsert all perimeters from download
     upserted = db.upsert_perimeters(perimeters)

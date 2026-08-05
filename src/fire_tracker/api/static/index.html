@@ -12,13 +12,17 @@
     <aside id="sidebar">
       <header>
         <h1>Fire Tracker</h1>
-        <button id="btn-close-sidebar" aria-label="Cerrar">&times;</button>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button id="btn-refresh" title="Actualizar datos" aria-label="Actualizar datos">&#10227;</button>
+          <button id="btn-close-sidebar" aria-label="Cerrar">&times;</button>
+        </div>
       </header>
       <div id="search-box">
         <input type="text" id="search-input" placeholder="Buscar ubicacion..." autocomplete="off" />
         <ul id="search-results"></ul>
       </div>
       <div id="fire-count"></div>
+      <div id="status-bar" class="hidden"></div>
       <ul id="fire-list"></ul>
       <footer id="sidebar-footer">
         <a href="https://github.com/vrieraj/fire-tracker" target="_blank" rel="noopener">
@@ -33,6 +37,7 @@
       <div id="map"></div>
     </main>
   </div>
+  <div id="toast" class="hidden"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/js/app.js"></script>
 </body>

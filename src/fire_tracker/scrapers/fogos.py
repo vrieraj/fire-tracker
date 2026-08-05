@@ -50,19 +50,26 @@ class FogosPtScraper(FireScraper):
                 return []
 
         for feat in features:
-            props = feat.get('properties', feat) if isinstance(feat, dict) else feat
+            if not isinstance(feat, dict):
+                continue
+            props = feat.get('properties', feat)
             if not isinstance(props, dict):
                 continue
 
-            geom = feat.get('geometry', {}) if 'type' in feat and feat.get('type') == 'Feature' else {}
-            coords = geom.get('coordinates', [None, None]) if geom else [None, None]
+            geom = feat.get('geometry') if feat.get('type') == 'Feature' else None
+            if isinstance(geom, dict):
+                coords = geom.get('coordinates')
+            else:
+                coords = None
+            if not isinstance(coords, list) or len(coords) < 2:
+                coords = [None, None]
 
-            fire_id = str(props.get('id', props.get('_id', '')))
+            fire_id = str(props.get('id', props.get('_id', '')) or '')
             if not fire_id:
                 continue
 
-            lat = props.get('lat', coords[1] if len(coords) > 1 else None)
-            lon = props.get('lng', coords[0] if coords else None)
+            lat = props.get('lat', coords[1])
+            lon = props.get('lng', coords[0])
             if lat is None and coords:
                 try:
                     lon, lat = float(coords[0]), float(coords[1])
@@ -74,8 +81,8 @@ class FogosPtScraper(FireScraper):
             status_code = props.get('statusCode')
             status = _STATUS_MAP.get(status_code, 'unknown')
 
-            natureza = props.get('natureza', '')
-            fire_type = 'forestal' if 'incendio' in natureza.lower() else None
+            natureza = props.get('natureza') or ''
+            fire_type = 'forestal' if 'incendio' in str(natureza).lower() else None
 
             detection = None
             dt = props.get('dateTime')
@@ -92,8 +99,12 @@ class FogosPtScraper(FireScraper):
                 'terrain': props.get('terrain'),
             }
 
-            area_data = props.get('icnf', {}) or {}
-            area_ha = area_data.get('burnArea', {}).get('total') if area_data else None
+            area_ha = None
+            area_data = props.get('icnf')
+            if isinstance(area_data, dict):
+                burn_area = area_data.get('burnArea')
+                if isinstance(burn_area, dict):
+                    area_ha = burn_area.get('total')
 
             source_url = props.get('url') or f'https://fogos.pt/pt/fogo/{fire_id}/detalhe'
 

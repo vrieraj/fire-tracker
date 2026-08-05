@@ -18,6 +18,37 @@
   const searchResults = $('#search-results');
   const btnOpen = $('#btn-open-sidebar');
   const btnClose = $('#btn-close-sidebar');
+  const btnRefresh = $('#btn-refresh');
+  const statusBar = $('#status-bar');
+  const toastEl = $('#toast');
+
+  // ── Status & toasts ───────────────────────────────
+  let toastTimer = null;
+  function showToast(msg, type = '') {
+    if (!toastEl) return;
+    toastEl.textContent = msg;
+    toastEl.className = type ? `show ${type}` : 'show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastEl.className = 'hidden';
+    }, 5000);
+  }
+
+  function setStatus(msg, type = '') {
+    if (!statusBar) return;
+    statusBar.textContent = msg;
+    statusBar.className = type ? type : '';
+    if (msg) statusBar.classList.remove('hidden');
+  }
+
+  // Defensive truncation for location strings that may still contain
+  // a full Nominatim display_name (legacy DB rows).
+  function shortPlace(str, max = 60) {
+    if (!str) return '';
+    const s = String(str).trim();
+    if (s.length <= max) return s;
+    return s.split(',')[0].trim().slice(0, max);
+  }
   // ── Map layers ─────────────────────────────────────
   const EUMETSAT_WMS = 'https://view.eumetsat.int/geoserver/mtg_fd';
 
@@ -368,12 +399,16 @@
   async function loadFires() {
     try {
       const res = await fetch('/api/fires/tracked');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const geojson = await res.json();
       fires = geojson.features || [];
       console.log(`Loaded ${fires.length} fires`);
+      setStatus(`${fires.length} incendios en seguimiento`, 'ok');
       await renderFires();
     } catch (e) {
       console.error('Error loading fires:', e);
+      showToast('Error al cargar incendios: ' + e.message, 'error');
+      setStatus('Error al cargar incendios', 'error');
     }
   }
 
@@ -384,7 +419,14 @@
     try {
     const query = (searchInput?.value || '').toLowerCase().trim();
 
-    const filtered = fires.filter(f => {
+    // Normalize: keep only features with usable coordinates
+    const valid = fires.filter(f =>
+      f && f.geometry && Array.isArray(f.geometry.coordinates) &&
+      f.geometry.coordinates.length >= 2 &&
+      typeof f.properties === 'object' && f.properties
+    );
+
+    const filtered = valid.filter(f => {
       const p = f.properties;
       if (query) {
         const text = [p.municipality, p.province, p.region, p.source_label, p.external_id]
@@ -455,8 +497,8 @@
 
       marker.bindPopup(`
         <div style="font-family:sans-serif;min-width:200px">
-          <strong>${p.municipality || p.external_id}</strong><br>
-          <small>${p.province ? p.province + ', ' : ''}${p.region || ''}</small>
+          <strong>${shortPlace(p.municipality) || p.external_id}</strong><br>
+          <small>${shortPlace(p.province) ? shortPlace(p.province) + ', ' : ''}${shortPlace(p.region) || ''}</small>
           <div style="font-size:0.78rem;color:#666;margin:2px 0">${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}</div>
           <hr style="margin:4px 0;border-color:#444">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
@@ -501,8 +543,8 @@
         const areaText = p.area_ha ? `<span class="fire-area">${p.area_ha} ha</span>` : '';
         const dateText = p.detection_date ? `<span class="fire-date">${p.detection_date.split('T')[0]}</span>` : '';
         li.innerHTML = `
-          <div class="fire-name">${p.municipality || p.external_id}</div>
-          <div class="fire-meta">${p.province ? p.province + ', ' : ''}${p.region || ''}</div>
+          <div class="fire-name">${shortPlace(p.municipality) || p.external_id}</div>
+          <div class="fire-meta">${shortPlace(p.province) ? shortPlace(p.province) + ', ' : ''}${shortPlace(p.region) || ''}</div>
           <div class="fire-tags">
             <span class="fire-status" style="background:${color}">${statusLbl}</span>
             <span class="fire-source">${p.source_label}</span>${areaText}${dateText}
@@ -773,6 +815,7 @@
     searchTimeout = setTimeout(async () => {
       try {
         const res = await fetch(`/api/geocode?q=${encodeURIComponent(q)}&limit=5`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!data.results?.length) {
           searchResults.classList.remove('active');
@@ -781,7 +824,7 @@
         searchResults.innerHTML = '';
         data.results.forEach(loc => {
           const li = document.createElement('li');
-          li.textContent = loc.display_name || loc.name;
+          li.textContent = loc.display_name || shortPlace(loc.name) || q;
           li.addEventListener('click', () => {
             map.setView([loc.latitude, loc.longitude], 11);
             searchResults.classList.remove('active');
@@ -789,10 +832,10 @@
 
             const locInfo = {
               name: loc.name,
-              municipality: loc.name,
-              province: loc.admin1,
-              region: '',
-              country: loc.country,
+              municipality: loc.municipality || loc.name,
+              province: loc.province || loc.admin1,
+              region: loc.region || '',
+              country: loc.country || '',
             };
             showPointPopup(loc.latitude, loc.longitude, locInfo);
           });
@@ -801,6 +844,7 @@
         searchResults.classList.add('active');
       } catch (e) {
         console.error('Geocode error:', e);
+        showToast('Error al buscar ubicacion', 'error');
       }
     }, 300);
   });
@@ -816,10 +860,20 @@
   btnClose.addEventListener('click', () => sidebar.classList.remove('open'));
 
   // ── Refresh ────────────────────────────────────────
+  async function refreshAll() {
+    if (btnRefresh) btnRefresh.classList.add('loading');
+    setStatus('Actualizando datos...', '');
+    await Promise.allSettled([loadFires(), loadPerimeters(), loadFRP(), loadAQI()]);
+    if (btnRefresh) btnRefresh.classList.remove('loading');
+    showToast('Datos actualizados', 'ok');
+  }
+  if (btnRefresh) btnRefresh.addEventListener('click', refreshAll);
+
   // ── FRP ────────────────────────────────────────────
   async function loadFRP() {
     try {
       const res = await fetch('/api/frp');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const geojson = await res.json();
       frpLayer.clearLayers();
       if (geojson.features?.length) {
@@ -828,6 +882,7 @@
       }
     } catch (e) {
       console.error('FRP load error:', e);
+      showToast('Error al cargar detecciones FRP', 'error');
     }
   }
 
@@ -848,11 +903,13 @@
   async function loadPerimeters() {
     try {
       const res = await fetch('/api/perimeters');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const geojson = await res.json();
       perimeterData = geojson.features || [];
       console.log(`EFFIS: ${perimeterData.length} perimeters fetched`);
     } catch (e) {
       console.error('Perimeters load error:', e);
+      showToast('Error al cargar perimetros EFFIS', 'error');
     }
   }
 
@@ -861,16 +918,19 @@
     perimeterLayer.clearLayers();
 
     // Build fire list: [{ id, lat, lon, status, name, color }]
-    const fireList = fires.map(f => {
-      const [lon, lat] = f.geometry.coordinates;
-      return {
-        id: f.properties.id,
-        lat, lon,
-        status: f.properties.status,
-        name: f.properties.municipality || f.properties.external_id,
-        color: statusColor(f.properties.status),
-      };
-    });
+    const fireList = fires
+      .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates) && f.geometry.coordinates.length >= 2)
+      .map(f => {
+        const [lon, lat] = f.geometry.coordinates;
+        const p = f.properties || {};
+        return {
+          id: p.id,
+          lat, lon,
+          status: p.status,
+          name: shortPlace(p.municipality) || p.external_id,
+          color: statusColor(p.status),
+        };
+      });
 
     // Point-in-polygon (ray casting)
     function pointInRing(lon, lat, ring) {
@@ -984,6 +1044,7 @@
   async function loadAQI() {
     try {
       const res = await fetch('/api/air-quality');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const geojson = await res.json();
       aqiLayer.clearLayers();
       if (geojson.features?.length) {
@@ -992,6 +1053,7 @@
       }
     } catch (e) {
       console.error('AQI load error:', e);
+      showToast('Error al cargar calidad del aire', 'error');
     }
   }
 

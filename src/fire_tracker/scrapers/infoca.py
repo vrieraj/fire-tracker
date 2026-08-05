@@ -37,11 +37,19 @@ class InfocaAndaluciaScraper(FireScraper):
             logger.error('INFOCA fetch error: %s', e)
             return []
 
-        features = data.get('features', [])
+        features = data.get('features', []) if isinstance(data, dict) else []
+        if not isinstance(features, list):
+            features = []
         incidents = []
         for feat in features:
+            if not isinstance(feat, dict):
+                continue
             props = feat.get('properties', {})
+            if not isinstance(props, dict):
+                props = {}
             geom = feat.get('geometry', {})
+            if not isinstance(geom, dict):
+                geom = {}
 
             coords = geom.get('coordinates', [None, None])
             try:
@@ -70,8 +78,8 @@ class InfocaAndaluciaScraper(FireScraper):
                 'grupos_apoyo': props.get('GRUPOS_APOYO'),
             }
 
-            raw_type = props.get('TIPO_INCIDENTE', '')
-            fire_type = 'forestal' if 'INCENDIOS FORESTALES' in raw_type.upper() else None
+            raw_type = props.get('TIPO_INCIDENTE') or ''
+            fire_type = 'forestal' if 'INCENDIOS FORESTALES' in str(raw_type).upper() else None
 
             source_url = (
                 'https://laagencia.maps.arcgis.com/apps/dashboards/'

@@ -19,7 +19,6 @@ import zipfile
 import shapefile
 
 logger = logging.getLogger(__name__)
-
 # WFS endpoint — monthly MODIS burnt area polygons
 _URL = (
     'https://maps.effis.emergency.copernicus.eu/effis'
@@ -53,24 +52,28 @@ def parse_shapefile(zip_bytes: bytes) -> list[dict]:
 
     Returns list of perimeter dicts with geometry as GeoJSON-compatible coords.
     """
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        # Find the .shp file
-        shp_name = None
-        for name in zf.namelist():
-            if name.endswith('.shp'):
-                shp_name = name
-                break
-        if not shp_name:
-            logger.error('EFFIS: no .shp file found in ZIP')
-            return []
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            # Find the .shp file
+            shp_name = None
+            for name in zf.namelist():
+                if name.endswith('.shp'):
+                    shp_name = name
+                    break
+            if not shp_name:
+                logger.error('EFFIS: no .shp file found in ZIP')
+                return []
 
-        # Extract all files to a temp dict
-        files = {}
-        for name in zf.namelist():
-            # Base name without extension
-            base = name.rsplit('.', 1)[0]
-            if base == shp_name.rsplit('.', 1)[0]:
-                files[name] = zf.read(name)
+            # Extract all files to a temp dict
+            files = {}
+            for name in zf.namelist():
+                # Base name without extension
+                base = name.rsplit('.', 1)[0]
+                if base == shp_name.rsplit('.', 1)[0]:
+                    files[name] = zf.read(name)
+    except (zipfile.BadZipFile, OSError) as e:
+        logger.error('EFFIS: invalid shapefile ZIP: %s', e)
+        return []
 
     # Use pyshp to read from memory
     # pyshp expects file-like objects
@@ -82,7 +85,11 @@ def parse_shapefile(zip_bytes: bytes) -> list[dict]:
     dbf_buf = io.BytesIO(files.get(dbf_key, b''))
     shx_buf = io.BytesIO(files.get(shx_key, b''))
 
-    reader = shapefile.Reader(shp=shp_buf, dbf=dbf_buf, shx=shx_buf, encoding='latin-1')
+    try:
+        reader = shapefile.Reader(shp=shp_buf, dbf=dbf_buf, shx=shx_buf, encoding='latin-1')
+    except (shapefile.ShapefileException, OSError, KeyError) as e:
+        logger.error('EFFIS: shapefile parse failed: %s', e)
+        return []
 
     # Field names from DBF
     fields = [f[0] for f in reader.fields[1:]]  # skip DeletionFlag

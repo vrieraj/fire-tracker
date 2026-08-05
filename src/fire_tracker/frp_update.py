@@ -55,15 +55,19 @@ def run_frp_update(hours: int = 3) -> dict:
         batch = all_urls[i:i+batch_size]
         with ThreadPoolExecutor(max_workers=6) as ex:
             futures = {ex.submit(fetch_one, u): u for u in batch}
-            for f in as_completed(futures, timeout=30):
-                try:
-                    for d in f.result(timeout=10):
-                        key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
-                        if key not in seen:
-                            seen.add(key)
-                            detections.append(d)
-                except Exception:
-                    pass
+            try:
+                for f in as_completed(futures, timeout=30):
+                    try:
+                        for d in f.result(timeout=10):
+                            key = (round(d.longitude, 4), round(d.latitude, 4), d.acquisition_time)
+                            if key not in seen:
+                                seen.add(key)
+                                detections.append(d)
+                    except Exception:
+                        pass
+            except TimeoutError:
+                logger.warning('FRP: batch of %d timed out, skipping remainder', len(batch))
+                ex.shutdown(wait=False, cancel_futures=True)
 
     if detections:
         db_rows = [{

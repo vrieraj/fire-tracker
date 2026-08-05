@@ -92,7 +92,9 @@ class FireScraper(ABC):
     @staticmethod
     def _status_normalize(raw: str, source: str) -> str:
         """Normalize status to canonical value."""
-        r = raw.strip().lower() if raw else ''
+        if not isinstance(raw, str):
+            raw = str(raw or '')
+        r = raw.strip().lower()
         if r in ('activo', 'active', 'declarado', 'attaque', 'em curso',
                  'actiu', 'signale', 'probable', 'signaled'):
             return 'active'

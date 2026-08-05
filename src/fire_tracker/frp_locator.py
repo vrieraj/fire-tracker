@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RADIUS_KM = 15
 
 # FRP confidence threshold
-_MIN_CONFIDENCE = 0.3
+_MIN_CONFIDENCE = 0.5
 
 
 @dataclass
@@ -121,15 +121,15 @@ def locate_fire(
 
         lat = loc.latitude
         lon = loc.longitude
-        municipality = loc.name or municipality
-        province = loc.region or province
+        municipality = loc.municipality or loc.name or municipality
+        province = loc.province or province
         region = loc.region or ""
         country = loc.country or "ES"
     else:
         loc = reverse_geocode(lat, lon)
         if loc:
-            municipality = municipality or loc.name
-            province = province or loc.region
+            municipality = municipality or loc.municipality or loc.name
+            province = province or loc.province
             region = loc.region
             country = loc.country
         else:
