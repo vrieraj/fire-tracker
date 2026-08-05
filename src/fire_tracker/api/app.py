@@ -113,6 +113,10 @@ def fires_tracked():
                 'detection_date': f.get('detection_date'),
                 'area_ha': f.get('area_ha'),
                 'resources': f.get('resources'),
+                'verified': f.get('verified'),
+                'perimeter_id': raw_data.get('perimeter_id'),
+                'perimeter_area_ha': raw_data.get('perimeter_area_ha'),
+                'perimeter_commune': raw_data.get('perimeter_commune'),
                 'last_updated': f.get('last_updated'),
             },
         })

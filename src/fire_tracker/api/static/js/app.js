@@ -372,6 +372,26 @@
     return STATUS_LABELS[status] || status || 'Desconocido';
   }
 
+  const VERIFIED_LABELS = {
+    frp: 'Satélite',
+    official: 'Fuente oficial',
+    corroborated: 'Corroborado',
+  };
+
+  function verifiedBadge(p) {
+    const v = p && p.verified;
+    const label = VERIFIED_LABELS[v];
+    if (!label) return '';
+    return `<span class="fire-badge badge-verified" title="Incendio verificado: ${label}">✓ ${label}</span>`;
+  }
+
+  function perimeterBadge(p) {
+    if (!p || !p.perimeter_id) return '';
+    const area = p.perimeter_area_ha ? ` · ${p.perimeter_area_ha} ha` : '';
+    const place = p.perimeter_commune ? ` (${shortPlace(p.perimeter_commune, 30)})` : '';
+    return `<span class="fire-badge badge-perimeter" title="Dentro de perímetro EFFIS${area}${place}">🗺️ EFFIS${area}${place}</span>`;
+  }
+
   // ── Sunrise/sunset via Open-Meteo API ──────────────
   async function getSunTimes(lat, lon) {
     try {
@@ -505,6 +525,9 @@
             <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color}"></span>
             <span>Estado: <b>${statusLbl}</b></span>
           </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin:3px 0">
+            ${verifiedBadge(p)}${perimeterBadge(p)}
+          </div>
           <span>Area: <b>${areaText}</b></span><br>
           ${dateText ? `<span>Deteccion: ${dateText}</span><br>` : ''}
           <span>Fuente: <a href="${sourceUrl}" target="_blank" style="color:#ef6c35">${p.source_label}</a></span>
@@ -548,6 +571,7 @@
           <div class="fire-tags">
             <span class="fire-status" style="background:${color}">${statusLbl}</span>
             <span class="fire-source">${p.source_label}</span>${areaText}${dateText}
+            ${verifiedBadge(p)}${perimeterBadge(p)}
           </div>
         `;
         li.addEventListener('click', () => {

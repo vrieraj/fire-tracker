@@ -12,13 +12,31 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
+def _iso_hours_ago(hours: int) -> str:
+    """UTC ISO timestamp N hours ago (string-comparable with our timestamps)."""
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def _geometry_rings(geometry: dict | None) -> list:
+    """Extract polygon rings from a GeoJSON Polygon/MultiPolygon."""
+    if not geometry:
+        return []
+    gtype = geometry.get('type')
+    coords = geometry.get('coordinates')
+    if gtype == 'Polygon' and coords:
+        return [coords[0]]
+    if gtype == 'MultiPolygon' and coords:
+        return [poly[0] for poly in coords if poly]
+    return []
 
 
 class FireDatabase:
@@ -60,6 +78,7 @@ class FireDatabase:
                 area_ha DOUBLE PRECISION,
                 resources TEXT,
                 raw_data TEXT,
+                verified VARCHAR(20),
                 last_updated TEXT NOT NULL,
                 PRIMARY KEY (source, external_id)
             )''',
@@ -135,6 +154,7 @@ class FireDatabase:
                     area_ha REAL,
                     resources TEXT,
                     raw_data TEXT,
+                    verified TEXT,
                     last_updated TEXT NOT NULL,
                     PRIMARY KEY (source, external_id)
                 )
@@ -191,6 +211,25 @@ class FireDatabase:
             self._init_pg()
         else:
             self._init_sqlite()
+        self._ensure_schema_migrations()
+
+    def _ensure_schema_migrations(self):
+        """Idempotent schema migrations for existing databases."""
+        if self._is_pg:
+            conn = self._connect()
+            try:
+                conn.autocommit = True
+                cur = conn.cursor()
+                cur.execute('ALTER TABLE fires ADD COLUMN IF NOT EXISTS verified VARCHAR(20)')
+            finally:
+                conn.close()
+        else:
+            with self._connect() as conn:
+                try:
+                    conn.execute('ALTER TABLE fires ADD COLUMN verified TEXT')
+                    conn.commit()
+                except sqlite3.OperationalError:
+                    conn.rollback()
 
     def upsert(self, fire: dict) -> bool:
         if self._is_pg:
@@ -657,6 +696,196 @@ class FireDatabase:
                     (f'-{hours} hours', lat_min, lat_max, lon_min, lon_max, min_confidence),
                 ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_frp_near(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float = 15.0,
+        hours: int = 24,
+        min_confidence: float = 0.5,
+    ) -> list[dict]:
+        """FRP detections within a radius (km) of a point."""
+        from fire_tracker.geo import bbox
+        lat_min, lat_max, lon_min, lon_max = bbox(lat, lon, radius_km * 1000)
+        return self.get_frp_by_bbox(
+            lat_min, lat_max, lon_min, lon_max,
+            hours=hours, min_confidence=min_confidence,
+        )
+
+    def find_fires_near(
+        self,
+        lat: float,
+        lon: float,
+        radius_m: float = 10_000,
+        *,
+        statuses: tuple[str, ...] | None = None,
+        source: str | None = None,
+        hours: int | None = None,
+    ) -> list[dict]:
+        """Fires within a radius, optionally filtered by status/source/age."""
+        from fire_tracker.geo import bbox, haversine
+        lat_min, lat_max, lon_min, lon_max = bbox(lat, lon, radius_m)
+        clauses = ['latitude BETWEEN %s AND %s', 'longitude BETWEEN %s AND %s']
+        params: list = [lat_min, lat_max, lon_min, lon_max]
+        if statuses:
+            ph = ', '.join(['%s'] * len(statuses))
+            clauses.append(f'status IN ({ph})')
+            params.extend(statuses)
+        if source:
+            clauses.append('source = %s')
+            params.append(source)
+        if hours is not None:
+            clauses.append('last_updated >= %s')
+            params.append(_iso_hours_ago(hours))
+        where = ' AND '.join(clauses)
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self._is_pg:
+                cur.execute(f'SELECT * FROM fires WHERE {where}', params)
+                cols = [d[0] for d in cur.description]
+                rows = [self._pg_row_to_dict(dict(zip(cols, r))) for r in cur.fetchall()]
+            else:
+                q = where.replace('%s', '?')
+                cur.execute(f'SELECT * FROM fires WHERE {q}', params)
+                rows = [self._row_to_dict(dict(r)) for r in cur.fetchall()]
+        finally:
+            if self._is_pg:
+                conn.close()
+        results = []
+        for f in rows:
+            if f.get('latitude') is None or f.get('longitude') is None:
+                continue
+            if haversine(lat, lon, f['latitude'], f['longitude']) <= radius_m:
+                results.append(f)
+        results.sort(key=lambda f: haversine(lat, lon, f['latitude'], f['longitude']))
+        return results
+
+    def get_fires_by_source(
+        self,
+        source: str,
+        statuses: tuple[str, ...] | None = None,
+    ) -> list[dict]:
+        """All fires from a source, optionally filtered by status."""
+        clauses = ['source = %s']
+        params: list = [source]
+        if statuses:
+            ph = ', '.join(['%s'] * len(statuses))
+            clauses.append(f'status IN ({ph})')
+            params.extend(statuses)
+        where = ' AND '.join(clauses)
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self._is_pg:
+                cur.execute(f'SELECT * FROM fires WHERE {where}', params)
+                cols = [d[0] for d in cur.description]
+                return [self._pg_row_to_dict(dict(zip(cols, r))) for r in cur.fetchall()]
+            q = where.replace('%s', '?')
+            cur.execute(f'SELECT * FROM fires WHERE {q}', params)
+            return [self._row_to_dict(dict(r)) for r in cur.fetchall()]
+        finally:
+            if self._is_pg:
+                conn.close()
+
+    def find_active_fire_near(
+        self,
+        lat: float,
+        lon: float,
+        radius_m: float = 10_000,
+        *,
+        source: str | None = None,
+        hours: int | None = None,
+    ) -> dict | None:
+        """Closest visible fire within a radius (None if none)."""
+        from fire_tracker.geo import haversine
+        fires = self.find_fires_near(
+            lat, lon, radius_m,
+            statuses=('active', 'controlled', 'stabilized', 'declarado'),
+            source=source, hours=hours,
+        )
+        if not fires:
+            return None
+        best = min(fires, key=lambda f: haversine(lat, lon, f['latitude'], f['longitude']))
+        return best
+
+    def set_fire_status(self, source: str, external_id: str, status: str) -> bool:
+        """Set a fire's status, recording the change in fire_history."""
+        now = datetime.now(timezone.utc).isoformat()
+        ph = '%s' if self._is_pg else '?'
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f'SELECT status FROM fires WHERE source = {ph} AND external_id = {ph}',
+                (source, external_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            old = row[0] if self._is_pg else row['status']
+            if old != status:
+                cur.execute(
+                    f'INSERT INTO fire_history (source, external_id, status, changed_at) '
+                    f'VALUES ({ph}, {ph}, {ph}, {ph})',
+                    (source, external_id, status, now),
+                )
+            ext_clause = "extinction_date = %s" if self._is_pg else "extinction_date = ?"
+            if status == 'extinguished':
+                cur.execute(
+                    f'UPDATE fires SET status = {ph}, {ext_clause}, last_updated = {ph} '
+                    f'WHERE source = {ph} AND external_id = {ph}',
+                    (status, now, now, source, external_id),
+                )
+            else:
+                cur.execute(
+                    f'UPDATE fires SET status = {ph}, last_updated = {ph} '
+                    f'WHERE source = {ph} AND external_id = {ph}',
+                    (status, now, source, external_id),
+                )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def find_perimeter_near(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float = 5.0,
+        max_days_old: int = 30,
+    ) -> list[dict]:
+        """EFFIS perimeters within a radius, sorted by distance (0 = inside)."""
+        from fire_tracker.geo import point_to_polygon_distance_m
+        perimeters = self.get_perimeters()
+        now = datetime.now(timezone.utc)
+        results = []
+        for p in perimeters:
+            if p.get('country') not in ('ES', 'PT', 'FR', None):
+                continue
+            fire_date = p.get('fire_date')
+            if fire_date and max_days_old:
+                try:
+                    fd = datetime.fromisoformat(str(fire_date).replace('Z', '+00:00'))
+                    if fd.tzinfo is None:
+                        fd = fd.replace(tzinfo=timezone.utc)
+                    if (now - fd).days > max_days_old:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            geometry = p.get('geometry')
+            rings = _geometry_rings(geometry)
+            if not rings:
+                continue
+            dist = point_to_polygon_distance_m(lat, lon, rings)
+            if dist <= radius_km * 1000:
+                results.append((dist, p))
+        results.sort(key=lambda x: x[0])
+        return [p for _, p in results]
 
     # ── EFFIS Perimeters methods ──────────────────────────────────
 
